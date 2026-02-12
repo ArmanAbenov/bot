@@ -1,0 +1,170 @@
+
+
+# 🇷🇺 РУССКАЯ ВЕРСИЯ
+
+**Инструкция по приему партии товара на сортировочный центр Астаны**
+
+## Цель
+
+Описание пошагового процесса приема партии товара на сортировочном центре Астаны, включая проверку данных в системе TMS и физическую приемку мешков совместно с сотрудником Казпочты.
+
+---
+
+## Этап 1. Подготовка и проверка данных в системе
+
+**Шаг 1. Получение Excel-файла от Казпочты**
+Запросите у сотрудника Казпочты электронный Excel-файл со списком мешков.
+Файл отправляется на электронную почту.
+Важно сохранить файл — он используется для сверки при приемке и может понадобиться в будущем.
+
+**Шаг 2. Получение номера мешка BKZ**
+Возьмите любой мешок, номер которого начинается на BKZ.
+
+**Шаг 3. Проверка мешка в системе TMS**
+Перейдите на сайт:
+[https://tms.ytoglobal.com/order/integratedQuery](https://tms.ytoglobal.com/order/integratedQuery)
+В правом верхнем углу переключите язык интерфейса на English (инструкция основана на англоязычном интерфейсе).
+
+**Шаг 4. Переход в Integrated Query**
+В левом меню выберите иконку планшета с шестерёнкой (вторая сверху).
+В открывшемся меню нажмите Integrated Query.
+
+**Шаг 5. Поиск по номеру мешка**
+В поле Package No выберите значение Bag No.
+Введите номер мешка, начинающийся на BKZ.
+
+**Шаг 6. Открытие информации по посылке**
+После поиска откроется список посылок.
+Откройте любую посылку из списка.
+
+**Шаг 7. Поиск CQ-номера партии**
+В открывшемся окне пролистайте страницу вниз до логистической траектории.
+Найдите раздел Operation Log и нажмите на него.
+В правой колонке Details найдите CQ-номер партии (например: CQ202601220011).
+
+---
+
+## Этап 2. Физическая приемка партии товара
+
+**Шаг 8. Подготовка к приемке**
+Пригласите сотрудника Казпочты для совместной сверки данных.
+Сообщите о начале процесса приемки товара.
+
+**Шаг 9. Приемка через PDA (приложение DuoWen)**
+
+1. Возьмите PDA (телефон со сканером).
+
+2. Откройте приложение DuoWen.
+
+3. На главном экране выберите:
+   Truck → Arrival Scan → введите CQ-номер партии → нажмите OK.
+   Это означает, что партия принята.
+
+4. Перейдите в Unload Scan.
+
+5. Отсканируйте каждый прибывший мешок.
+   Это означает, что мешок разгружен.
+
+**Параллельная сверка с Казпочтой**
+Во время сканирования каждого мешка диктуйте последние 3 цифры номера мешка сотруднику Казпочты.
+Сотрудник сверяет мешок со списком в Excel.
+Рекомендуется посадить сотрудника за ноутбук, открыть Excel-файл и отмечать принятые мешки зелёным цветом.
+
+---
+
+## Этап 3. Контроль и завершение
+
+**Шаг 10. Финальная проверка**
+Количество мешков, принятых в PDA, должно полностью совпадать с количеством мешков в акте приема-передачи.
+
+Если данные совпадают — приемка выполнена корректно.
+
+**Результат:**
+Партия товара успешно принята на сортировочный центр Астаны.
+
+---
+
+---
+
+# 🇬🇧 ENGLISH VERSION
+
+**Instruction: Receiving a Shipment at the Astana Sorting Center**
+
+## Purpose
+
+This instruction describes the step-by-step process of receiving a shipment at the Astana sorting center, including data verification in the TMS system and physical acceptance of bags together with a Kazpost employee.
+
+---
+
+## Stage 1. Preparation and System Verification
+
+**Step 1. Obtain the Excel File from Kazpost**
+Request an electronic Excel file with the list of bags from a Kazpost employee.
+The file is sent by email and must be saved.
+This file is required for reconciliation during acceptance and may be needed in the future.
+
+**Step 2. Get a BKZ Bag Number**
+Take any bag with a number starting with BKZ.
+
+**Step 3. Check the Bag in the TMS System**
+Open the website:
+[https://tms.ytoglobal.com/order/integratedQuery](https://tms.ytoglobal.com/order/integratedQuery)
+Switch the interface language to English (all steps are based on the English interface).
+
+**Step 4. Navigate to Integrated Query**
+In the left menu, select the tablet-with-gear icon (second from the top).
+Click Integrated Query.
+
+**Step 5. Search by Bag Number**
+In the Package No field, select Bag No.
+Enter the bag number starting with BKZ.
+
+**Step 6. Open Package Details**
+A list of packages will appear.
+Open any package from the list.
+
+**Step 7. Find the CQ Batch Number**
+Scroll down to the logistics trajectory section.
+Open Operation Log.
+In the rightmost column Details, find the CQ batch number (e.g. CQ202601220011).
+
+---
+
+## Stage 2. Physical Acceptance of the Shipment
+
+**Step 8. Prepare for Acceptance**
+Invite a Kazpost employee for joint reconciliation.
+Inform them that the shipment acceptance process is starting.
+
+**Step 9. Acceptance Using PDA (DuoWen Application)**
+
+1. Take the PDA (scanner device).
+
+2. Open the DuoWen application.
+
+3. On the main screen select:
+   Truck → Arrival Scan → enter the CQ batch number → press OK.
+   This confirms that the batch has been accepted.
+
+4. Go to Unload Scan.
+
+5. Scan each received bag.
+   This confirms that the bag has been unloaded.
+
+**Parallel Reconciliation with Kazpost**
+While scanning each bag, read out loud the last three digits of the bag number to the Kazpost employee.
+The Kazpost employee checks the number against the Excel list.
+It is recommended to seat the Kazpost employee at a laptop, open the Excel file, and mark accepted bags in green.
+
+---
+
+## Stage 3. Control and Completion
+
+**Step 10. Final Verification**
+The number of bags accepted in the PDA must fully match the number in the acceptance transfer act.
+
+If all figures match, the shipment has been accepted correctly.
+
+**Result:**
+The shipment has been successfully received at the Astana sorting center.
+

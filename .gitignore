@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Environment
+.env
+.env.local
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+data/*.db
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# FAISS indexes
+*.faiss
+*.pkl
+vector_store/
+faiss_index/
+
+# Terminals (Cursor IDE)
+terminals/
+
+# Test files
+test_*.py
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary migration docs (optional - uncomment if you want to exclude)
+# MIGRATION_*.md

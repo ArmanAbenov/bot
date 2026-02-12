@@ -1,0 +1,1303 @@
+"""Хендлеры для администраторов."""
+from pathlib import Path
+
+from aiogram import Bot, F, Router
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup
+
+from app.bot.keyboards.main_menu import get_main_menu
+from app.bot.keyboards.department import get_admin_department_keyboard, get_delivery_submenu_keyboard
+from app.core.config import settings
+from app.core.database import AsyncSessionLocal
+from app.core.models import Department
+from app.services.ai_service import GeminiService
+from app.services.admin_service import add_admin, get_all_admins, is_admin
+from app.utils.filters import IsAdmin
+from app.utils.logger import logger
+from app.utils.states import AdminState
+from app.utils.department import get_department_display_name
+
+router = Router(name="admin")
+
+
+async def check_admin_access(user_id: int) -> bool:
+    """Проверяет, является ли пользователь администратором через БД."""
+    try:
+        async with AsyncSessionLocal() as session:
+            return await is_admin(session, user_id)
+    except Exception as e:
+        logger.error(f"Error checking admin access for {user_id}: {e}", exc_info=True)
+        return False
+
+
+async def get_main_menu_for_user(user_id: int, role: str | None = None, lang: str = "ru") -> ReplyKeyboardMarkup:
+    """
+    Возвращает главное меню с учетом статуса админа в БД.
+    
+    Args:
+        user_id: Telegram ID пользователя
+        role: Роль пользователя из таблицы users
+        lang: Код языка пользователя
+    
+    Returns:
+        ReplyKeyboardMarkup с правильной клавиатурой
+    """
+    async with AsyncSessionLocal() as session:
+        user_is_admin = await is_admin(session, user_id)
+    return get_main_menu(role=role, is_admin=user_is_admin, lang=lang)
+
+
+def get_admin_menu(lang: str = "ru") -> ReplyKeyboardMarkup:
+    """
+    Возвращает клавиатуру админ-панели.
+    
+    Args:
+        lang: Код языка (ru, kk, en, zh)
+    
+    Returns:
+        ReplyKeyboardMarkup с локализованными кнопками
+    """
+    from app.core.i18n import i18n
+    
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=i18n.get("admin_add_knowledge", lang))],
+            [KeyboardButton(text=i18n.get("admin_add_file", lang))],
+            [KeyboardButton(text=i18n.get("admin_manage_knowledge", lang))],
+            [KeyboardButton(text=i18n.get("admin_manage_admins", lang))],
+            [KeyboardButton(text=i18n.get("admin_invite_code", lang))],
+            [KeyboardButton(text=i18n.get("main_menu_back", lang))],
+        ],
+        resize_keyboard=True,
+    )
+    return keyboard
+
+
+def create_knowledge_files_keyboard(files: list[str]) -> InlineKeyboardMarkup:
+    """Создает inline-клавиатуру со списком файлов и кнопками удаления."""
+    buttons: list[list[InlineKeyboardButton]] = []
+    
+    for filename in files:
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"📄 {filename}",
+                callback_data=f"view_file_{filename}"
+            ),
+            InlineKeyboardButton(
+                text="❌ Удалить",
+                callback_data=f"delete_file_{filename}"
+            )
+        ])
+    
+    # Кнопка обновления списка
+    buttons.append([
+        InlineKeyboardButton(
+            text="🔄 Обновить список",
+            callback_data="refresh_knowledge_files"
+        )
+    ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@router.message(lambda message: message.text in [
+    "👑 Админ-панель",
+    "👑 Әкімші панелі",
+    "👑 Admin Panel",
+    "👑 管理面板"
+])
+async def handle_admin_panel(message: Message, role: str | None = None, lang: str = "ru", i18n = None) -> None:
+    """Открывает админ-панель."""
+    try:
+        from app.core.i18n import i18n as i18n_manager
+        if i18n is None:
+            i18n = i18n_manager
+            
+        # Проверяем, что пользователь — админ через БД
+        async with AsyncSessionLocal() as session:
+            user_is_admin = await is_admin(session, message.from_user.id)
+            if not user_is_admin:
+                await message.answer(i18n.get("admin_no_access", lang))
+                return
+        
+        await message.answer(
+            i18n.get("admin_welcome", lang),
+            reply_markup=get_admin_menu(lang)
+        )
+        logger.info(f"Admin {message.from_user.id} opened admin panel")
+        
+    except Exception as e:
+        logger.error(f"Error in admin panel handler: {e}", exc_info=True)
+        # Проверяем, является ли пользователь админом через БД
+        async with AsyncSessionLocal() as session:
+            user_is_admin = await is_admin(session, message.from_user.id)
+        await message.answer(i18n.get("admin_error", lang), reply_markup=get_main_menu(role=role, is_admin=user_is_admin, lang=lang))
+
+
+@router.message(lambda message: message.text in [
+    "◀️ Назад в меню",
+    "◀️ Мәзірге оралу",
+    "◀️ Back to menu",
+    "◀️ 返回菜单"
+])
+async def handle_back_to_menu(message: Message, state: FSMContext, role: str | None = None, lang: str = "ru", i18n = None) -> None:
+    """Возврат в главное меню."""
+    try:
+        from app.core.i18n import i18n as i18n_manager
+        if i18n is None:
+            i18n = i18n_manager
+            
+        await state.clear()
+        
+        # Проверяем, является ли пользователь админом через БД
+        async with AsyncSessionLocal() as session:
+            user_is_admin = await is_admin(session, message.from_user.id)
+        
+        await message.answer(
+            i18n.get("admin_main_menu", lang),
+            reply_markup=get_main_menu(role=role, is_admin=user_is_admin, lang=lang)
+        )
+    except Exception as e:
+        logger.error(f"Error in back to menu handler: {e}", exc_info=True)
+        await state.clear()
+        async with AsyncSessionLocal() as session:
+            user_is_admin = await is_admin(session, message.from_user.id)
+        await message.answer(
+            "Главное меню:" if lang == "ru" else "Main menu:",
+            reply_markup=get_main_menu(role=role, is_admin=user_is_admin, lang=lang)
+        )
+
+
+@router.message(lambda message: message.text in [
+    "🔑 Инвайт-код",
+    "🔑 Шақыру коды",
+    "🔑 Invite Code",
+    "🔑 邀请码"
+])
+async def handle_invite_code_button(message: Message, role: str | None = None, lang: str = "ru") -> None:
+    """Показывает инвайт-код (кнопка)."""
+    try:
+        if not await check_admin_access(message.from_user.id):
+            from app.core.i18n import i18n
+            await message.answer(i18n.get("admin_no_access_short", lang))
+            return
+        
+        invite_code = settings.invite_code
+        await message.answer(
+            f"🔑 Текущий инвайт-код: `{invite_code}`\n\n"
+            "Поделись этим кодом с новыми сотрудниками для регистрации.",
+            parse_mode="Markdown",
+            reply_markup=get_admin_menu(lang)
+        )
+        logger.info(f"Admin {message.from_user.id} requested invite code")
+        
+    except Exception as e:
+        logger.error(f"Error in invite code button handler: {e}", exc_info=True)
+        from app.core.i18n import i18n
+        await message.answer(i18n.get("admin_error", lang), reply_markup=get_admin_menu(lang))
+
+
+@router.message(lambda message: message.text in [
+    "📝 Добавить знание",
+    "📝 Білім қосу",
+    "📝 Add Knowledge",
+    "📝 添加知识"
+])
+async def handle_add_knowledge_button(message: Message, state: FSMContext, role: str | None = None, lang: str = "ru") -> None:
+    """Начинает процесс добавления знания в базу."""
+    try:
+        if not await check_admin_access(message.from_user.id):
+            from app.core.i18n import i18n
+            await message.answer(i18n.get("admin_no_access_short", lang))
+            return
+        
+        # Переводим в состояние ожидания текста
+        await state.set_state(AdminState.waiting_for_knowledge_text)
+        
+        await message.answer(
+            "📝 Добавление знания в базу\n\n"
+            "Отправьте текст или голосовое сообщение, которое нужно добавить в базу знаний.\n\n"
+            "AI автоматически:\n"
+            "• Распознает речь (если голосовое)\n"
+            "• Придумает название файла\n"
+            "• Структурирует текст\n"
+            "• Сохранит в базу знаний\n\n"
+            "Для отмены нажмите /cancel",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="/cancel")]],
+                resize_keyboard=True,
+            )
+        )
+        logger.info(f"Admin {message.from_user.id} started adding knowledge")
+        
+    except Exception as e:
+        logger.error(f"Error in add knowledge button handler: {e}", exc_info=True)
+        from app.core.i18n import i18n
+        await message.answer(i18n.get("admin_error", lang), reply_markup=get_admin_menu(lang))
+
+
+@router.message(Command("cancel"), StateFilter(AdminState.waiting_for_knowledge_text))
+async def handle_cancel_add_knowledge(message: Message, state: FSMContext, role: str | None = None, lang: str = "ru") -> None:
+    """Отмена добавления знания."""
+    await state.clear()
+    # Проверяем доступ через БД
+    user_is_admin = await check_admin_access(message.from_user.id)
+    from app.core.i18n import i18n
+    await message.answer(
+        i18n.get("admin_cancel_knowledge", lang),
+        reply_markup=get_admin_menu(lang) if user_is_admin else await get_main_menu_for_user(message.from_user.id, role, lang)
+    )
+    logger.info(f"Admin {message.from_user.id} cancelled adding knowledge")
+
+
+@router.message(StateFilter(AdminState.waiting_for_knowledge_text), F.voice)
+async def handle_knowledge_voice(
+    message: Message,
+    bot: Bot,
+    state: FSMContext,
+    role: str | None = None,
+    lang: str = "ru"
+) -> None:
+    """Обрабатывает голосовое сообщение для добавления в базу знаний."""
+    try:
+        if not await check_admin_access(message.from_user.id):
+            await state.clear()
+            await message.answer("У вас нет доступа.")
+            return
+        
+        if not message.voice:
+            return
+        
+        telegram_id = message.from_user.id
+        voice = message.voice
+        
+        logger.info(f"Admin {telegram_id} sent voice message (duration: {voice.duration}s, size: {voice.file_size} bytes)")
+        
+        # Показываем статус
+        await bot.send_chat_action(chat_id=telegram_id, action="typing")
+        await message.answer("🎙️ Анализирую аудио...")
+        
+        try:
+            import tempfile
+            
+            # Создаем временный файл для .ogg
+            with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
+                temp_audio_path = Path(temp_audio.name)
+            
+            try:
+                # Скачиваем голосовое сообщение
+                logger.info(f"[VOICE] Downloading voice file_id={voice.file_id}...")
+                file_info = await bot.get_file(voice.file_id)
+                await bot.download_file(
+                    file_path=file_info.file_path,
+                    destination=temp_audio_path
+                )
+                logger.info(f"[VOICE] Voice file downloaded to {temp_audio_path} ({temp_audio_path.stat().st_size} bytes)")
+                
+                # Обрабатываем аудио через Gemini
+                await message.answer("⏳ Структурирую знание с помощью AI...")
+                filename, structured_text = await GeminiService.process_knowledge_audio(temp_audio_path)
+                
+                # Сохраняем данные в state для последующего использования
+                await state.update_data(
+                    filename=filename,
+                    structured_text=structured_text,
+                    content_type="voice"
+                )
+                
+                # Переводим в состояние выбора отдела
+                await state.set_state(AdminState.waiting_for_department_choice)
+                
+                # Показываем клавиатуру выбора отдела
+                await message.answer(
+                    f"✅ AI обработал голосовое сообщение!\n\n"
+                    f"📄 Файл: {filename}.txt\n"
+                    f"📊 Размер: {len(structured_text)} символов\n\n"
+                    f"📂 В какой отдел добавить это знание?",
+                    reply_markup=get_admin_department_keyboard()
+                )
+                
+            finally:
+                # Удаляем временный файл
+                if temp_audio_path.exists():
+                    temp_audio_path.unlink()
+                    logger.info(f"[VOICE] Deleted temp audio file: {temp_audio_path}")
+                    
+        except Exception as e:
+            logger.error(f"Error processing voice knowledge: {e}", exc_info=True)
+            await message.answer(
+                f"❌ Ошибка при обработке голосового сообщения:\n{str(e)}\n\n"
+                "Попробуйте еще раз или нажмите /cancel для отмены.",
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in voice knowledge handler: {e}", exc_info=True)
+        await state.clear()
+        # Проверяем доступ через БД
+        user_is_admin = await check_admin_access(message.from_user.id)
+        await message.answer(
+            "Произошла ошибка при обработке голосового сообщения.",
+            reply_markup=get_admin_menu(lang) if user_is_admin else await get_main_menu_for_user(message.from_user.id, role, lang)
+        )
+
+
+@router.message(StateFilter(AdminState.waiting_for_knowledge_text), F.text)
+async def handle_knowledge_text(
+    message: Message,
+    bot: Bot,
+    state: FSMContext,
+    role: str | None = None,
+    lang: str = "ru"
+) -> None:
+    """Обрабатывает текст для добавления в базу знаний."""
+    try:
+        if not await check_admin_access(message.from_user.id):
+            await state.clear()
+            await message.answer("У вас нет доступа.")
+            return
+        
+        raw_text = message.text.strip()
+        
+        if raw_text.startswith("/"):
+            # Это команда, пропускаем
+            return
+        
+        if len(raw_text) < 10:
+            await message.answer(
+                "⚠️ Текст слишком короткий. Отправьте более содержательный текст.",
+            )
+            return
+        
+        telegram_id = message.from_user.id
+        logger.info(f"Admin {telegram_id} sent knowledge text (length: {len(raw_text)} chars)")
+        
+        # Показываем статус
+        await bot.send_chat_action(chat_id=telegram_id, action="typing")
+        await message.answer("⏳ Обрабатываю текст с помощью AI...")
+        
+        try:
+            # Обрабатываем текст через Gemini
+            filename, structured_text = GeminiService.process_knowledge_text(raw_text)
+            
+            # Сохраняем данные в state для последующего использования
+            await state.update_data(
+                filename=filename,
+                structured_text=structured_text,
+                content_type="text"
+            )
+            
+            # Переводим в состояние выбора отдела
+            await state.set_state(AdminState.waiting_for_department_choice)
+            
+            # Показываем клавиатуру выбора отдела
+            await message.answer(
+                f"✅ AI обработал текст!\n\n"
+                f"📄 Файл: {filename}.txt\n"
+                f"📊 Размер: {len(structured_text)} символов\n\n"
+                f"📂 В какой отдел добавить это знание?",
+                reply_markup=get_admin_department_keyboard()
+            )
+            
+        except Exception as e:
+            logger.error(f"Error processing knowledge text: {e}", exc_info=True)
+            await message.answer(
+                f"❌ Ошибка при обработке текста:\n{str(e)}\n\n"
+                "Попробуйте еще раз или нажмите /cancel для отмены.",
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in knowledge text handler: {e}", exc_info=True)
+        await state.clear()
+        # Проверяем доступ через БД
+        user_is_admin = await check_admin_access(message.from_user.id)
+        await message.answer(
+            "Произошла ошибка при обработке текста.",
+            reply_markup=get_admin_menu(lang) if user_is_admin else await get_main_menu_for_user(message.from_user.id, role, lang)
+        )
+
+
+@router.message(lambda message: message.text in [
+    "📥 Добавить файл",
+    "📥 Файл қосу",
+    "📥 Add File",
+    "📥 添加文件"
+])
+async def handle_add_file_button(message: Message, state: FSMContext, role: str | None = None, lang: str = "ru") -> None:
+    """Начинает процесс загрузки файла в базу знаний."""
+    try:
+        if not await check_admin_access(message.from_user.id):
+            from app.core.i18n import i18n
+            await message.answer(i18n.get("admin_no_access_short", lang))
+            return
+        
+        # Переводим в состояние ожидания документа
+        await state.set_state(AdminState.waiting_for_document)
+        
+        await message.answer(
+            "📥 Загрузка файла в базу знаний\n\n"
+            "Отправьте файл с расширением:\n"
+            "• .pdf\n"
+            "• .txt\n"
+            "• .docx\n\n"
+            "Файл будет сохранен с оригинальным именем в папку data/knowledge/\n\n"
+            "Для отмены нажмите /cancel",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="/cancel")]],
+                resize_keyboard=True,
+            )
+        )
+        logger.info(f"Admin {message.from_user.id} started adding file")
+        
+    except Exception as e:
+        logger.error(f"Error in add file button handler: {e}", exc_info=True)
+        from app.core.i18n import i18n
+        await message.answer(i18n.get("admin_error", lang), reply_markup=get_admin_menu(lang))
+
+
+@router.message(Command("cancel"), StateFilter(AdminState.waiting_for_document))
+async def handle_cancel_add_file(message: Message, state: FSMContext, role: str | None = None, lang: str = "ru") -> None:
+    """Отмена загрузки файла."""
+    await state.clear()
+    # Проверяем доступ через БД
+    user_is_admin = await check_admin_access(message.from_user.id)
+    from app.core.i18n import i18n
+    await message.answer(
+        i18n.get("admin_cancel_file", lang),
+        reply_markup=get_admin_menu(lang) if user_is_admin else await get_main_menu_for_user(message.from_user.id, role, lang)
+    )
+    logger.info(f"Admin {message.from_user.id} cancelled adding file")
+
+
+@router.message(StateFilter(AdminState.waiting_for_document), F.document)
+async def handle_document_upload(
+    message: Message,
+    bot: Bot,
+    state: FSMContext,
+    role: str | None = None,
+    lang: str = "ru"
+) -> None:
+    """Обрабатывает загрузку документа в базу знаний."""
+    try:
+        if not await check_admin_access(message.from_user.id):
+            await state.clear()
+            await message.answer("У вас нет доступа.")
+            return
+        
+        if not message.document:
+            await message.answer(
+                "⚠️ Пожалуйста, отправьте файл как документ (не как фото)."
+            )
+            return
+        
+        document = message.document
+        filename = document.file_name
+        
+        if not filename:
+            await message.answer(
+                "⚠️ Файл не имеет имени. Пожалуйста, отправьте файл с именем."
+            )
+            return
+        
+        # Проверяем расширение файла
+        allowed_extensions = {".pdf", ".txt", ".docx"}
+        file_ext = Path(filename).suffix.lower()
+        
+        if file_ext not in allowed_extensions:
+            await message.answer(
+                f"⚠️ Неподдерживаемый формат файла: {file_ext}\n\n"
+                f"Поддерживаемые форматы: {', '.join(allowed_extensions)}\n"
+                "Пожалуйста, отправьте файл с правильным расширением."
+            )
+            return
+        
+        telegram_id = message.from_user.id
+        logger.info(f"Admin {telegram_id} sent file: {filename} (size: {document.file_size} bytes)")
+        
+        # Показываем статус
+        await bot.send_chat_action(chat_id=telegram_id, action="upload_document")
+        
+        try:
+            # Сохраняем данные в state для последующего использования
+            await state.update_data(
+                filename=filename,
+                file_id=document.file_id,
+                file_size=document.file_size,
+                content_type="document"
+            )
+            
+            # Переводим в состояние выбора отдела
+            await state.set_state(AdminState.waiting_for_department_choice)
+            
+            # Показываем клавиатуру выбора отдела
+            await message.answer(
+                f"✅ Файл получен!\n\n"
+                f"📄 Имя: {filename}\n"
+                f"📊 Размер: {document.file_size} байт\n\n"
+                f"📂 В какой отдел добавить этот файл?",
+                reply_markup=get_admin_department_keyboard()
+            )
+            
+        except Exception as e:
+            logger.error(f"Error processing file upload: {e}", exc_info=True)
+            await message.answer(
+                f"❌ Ошибка при загрузке файла:\n{str(e)}\n\n"
+                "Попробуйте еще раз или нажмите /cancel для отмены.",
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in document upload handler: {e}", exc_info=True)
+        await state.clear()
+        # Проверяем доступ через БД
+        user_is_admin = await check_admin_access(message.from_user.id)
+        await message.answer(
+            "Произошла ошибка при обработке файла.",
+            reply_markup=get_admin_menu(lang) if user_is_admin else await get_main_menu_for_user(message.from_user.id, role, lang)
+        )
+
+
+@router.message(lambda message: message.text in [
+    "📚 Управление базой знаний",
+    "📚 Білім базасын басқару",
+    "📚 Manage Knowledge Base",
+    "📚 管理知识库"
+])
+async def handle_manage_knowledge(message: Message, role: str | None = None, lang: str = "ru") -> None:
+    """Показывает список отделов с кнопками для навигации."""
+    try:
+        if not await check_admin_access(message.from_user.id):
+            from app.core.i18n import i18n
+            await message.answer(i18n.get("admin_no_access_short", lang))
+            return
+        
+        from app.core.i18n import i18n
+        
+        # Получаем статистику по отделам
+        stats = GeminiService.get_knowledge_stats()
+        
+        if not stats:
+            await message.answer(
+                i18n.get("kb_empty", lang),
+                reply_markup=get_admin_menu(lang)
+            )
+            return
+        
+        # Маппинг для локализации названий отделов
+        dept_names = {
+            "common": i18n.get("kb_dept_common", lang),
+            "delivery": i18n.get("department_delivery", lang),
+            "sorting": i18n.get("department_sorting", lang),
+            "manager": i18n.get("department_manager", lang),
+            "customer_service": i18n.get("department_customer_service", lang),
+        }
+        
+        # Создаем inline-клавиатуру с отделами
+        buttons: list[list[InlineKeyboardButton]] = []
+        
+        for dept_key in sorted(stats.keys()):
+            count = stats[dept_key]
+            dept_display = dept_names.get(dept_key, dept_key.replace("_", " ").title())
+            
+            # Кнопка с названием отдела и количеством файлов
+            buttons.append([
+                InlineKeyboardButton(
+                    text=f"📂 {dept_display} ({count})",
+                    callback_data=f"kb_dept:{dept_key}"
+                )
+            ])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        
+        text = i18n.get("kb_select_department", lang)
+        total_files = sum(stats.values())
+        text += f"\n\n📊 {i18n.get('kb_total', lang)}: {total_files} {i18n.get('kb_documents', lang)}"
+        
+        await message.answer(text, reply_markup=keyboard)
+        logger.info(f"Admin {message.from_user.id} opened knowledge base management")
+        
+    except Exception as e:
+        logger.error(f"Error in manage knowledge handler: {e}", exc_info=True)
+        from app.core.i18n import i18n
+        await message.answer(i18n.get("admin_error", lang), reply_markup=get_admin_menu(lang))
+
+
+@router.callback_query(F.data.startswith("delete_file_"))
+async def handle_delete_file(callback: CallbackQuery, role: str | None = None) -> None:
+    """Обрабатывает удаление файла из базы знаний."""
+    try:
+        if not await check_admin_access(callback.from_user.id):
+            await callback.answer("У вас нет доступа.", show_alert=True)
+            return
+        
+        # Извлекаем имя файла из callback_data
+        filename = callback.data.replace("delete_file_", "", 1)
+        
+        if not filename:
+            await callback.answer("Ошибка: не указано имя файла.", show_alert=True)
+            return
+        
+        logger.info(f"Admin {callback.from_user.id} requested deletion of file: {filename}")
+        
+        try:
+            # Удаляем файл
+            GeminiService.delete_knowledge_file(filename)
+            
+            # Обновляем векторный индекс в памяти
+            try:
+                logger.info("[RAG] Rebuilding department indices after file deletion...")
+                GeminiService._create_department_indices()
+                logger.info("[RAG] Department indices updated successfully")
+            except Exception as e:
+                logger.error(f"[RAG] Error updating vector index: {e}", exc_info=True)
+                # Не прерываем процесс, просто логируем ошибку
+            
+            # Обновляем список файлов
+            files = GeminiService.get_knowledge_files()
+            
+            # Создаем клавиатуру с предложениями
+            action_buttons = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="📥 Загрузить файл",
+                            callback_data="admin_add_file_after_delete"
+                        ),
+                        InlineKeyboardButton(
+                            text="◀️ Вернуться в меню",
+                            callback_data="admin_back_to_menu"
+                        )
+                    ]
+                ]
+            )
+            
+            if not files:
+                # Если файлов больше нет, отправляем сообщение с предложениями
+                await callback.message.edit_text(
+                    "📚 База знаний пуста.\n\n"
+                    f"✅ Файл {filename} успешно удален.\n\n"
+                    "Что хотите сделать дальше?",
+                    reply_markup=action_buttons
+                )
+                await callback.answer(f"✅ Файл {filename} удален. База знаний пуста.")
+            else:
+                # Обновляем список с кнопками действий
+                text = "📚 Управление базой знаний\n\n"
+                text += f"✅ Файл {filename} успешно удален.\n\n"
+                text += f"Осталось файлов: {len(files)}\n\n"
+                text += "Выберите файл для удаления:"
+                
+                keyboard = create_knowledge_files_keyboard(files)
+                
+                # Добавляем кнопки действий в конец клавиатуры
+                keyboard.inline_keyboard.extend(action_buttons.inline_keyboard)
+                
+                await callback.message.edit_text(text, reply_markup=keyboard)
+                await callback.answer(f"✅ Файл {filename} успешно удален")
+            
+            logger.info(f"Admin {callback.from_user.id} deleted file: {filename}")
+            
+        except Exception as e:
+            logger.error(f"Error deleting file {filename}: {e}", exc_info=True)
+            await callback.answer(f"❌ Ошибка при удалении файла: {str(e)}", show_alert=True)
+            
+    except Exception as e:
+        logger.error(f"Error in delete file handler: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка при удалении файла.", show_alert=True)
+
+
+@router.callback_query(F.data == "refresh_knowledge_files")
+async def handle_refresh_knowledge_files(callback: CallbackQuery, role: str | None = None) -> None:
+    """Обновляет список файлов базы знаний."""
+    try:
+        if not await check_admin_access(callback.from_user.id):
+            await callback.answer("У вас нет доступа.", show_alert=True)
+            return
+        
+        files = GeminiService.get_knowledge_files()
+        
+        if not files:
+            await callback.message.edit_text(
+                "📚 База знаний пуста.\n\n"
+                "Используйте '📝 Добавить знание' для добавления новых файлов."
+            )
+            await callback.answer("Список обновлен. База знаний пуста.")
+            return
+        
+        text = "📚 Управление базой знаний\n\n"
+        text += f"Всего файлов: {len(files)}\n\n"
+        text += "Выберите файл для удаления:"
+        
+        keyboard = create_knowledge_files_keyboard(files)
+        
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer("✅ Список файлов обновлен")
+        
+        logger.info(f"Admin {callback.from_user.id} refreshed knowledge files list")
+        
+    except Exception as e:
+        logger.error(f"Error in refresh knowledge files handler: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка при обновлении списка.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("view_file_"))
+async def handle_view_file(callback: CallbackQuery, role: str | None = None) -> None:
+    """Показывает информацию о файле (заглушка для будущего расширения)."""
+    filename = callback.data.replace("view_file_", "", 1)
+    await callback.answer(f"Файл: {filename}", show_alert=True)
+
+
+@router.callback_query(F.data == "admin_add_file_after_delete")
+async def handle_add_file_after_delete(callback: CallbackQuery, state: FSMContext, role: str | None = None) -> None:
+    """Переводит админа в режим загрузки файла после удаления."""
+    try:
+        if not await check_admin_access(callback.from_user.id):
+            await callback.answer("У вас нет доступа.", show_alert=True)
+            return
+        
+        # Переводим в состояние ожидания документа
+        await state.set_state(AdminState.waiting_for_document)
+        
+        await callback.message.edit_text(
+            "📥 Загрузка файла в базу знаний\n\n"
+            "Отправьте файл с расширением:\n"
+            "• .pdf\n"
+            "• .txt\n"
+            "• .docx\n\n"
+            "Файл будет сохранен с оригинальным именем в папку data/knowledge/\n\n"
+            "Для отмены нажмите /cancel"
+        )
+        await callback.answer("✅ Готов к загрузке файла")
+        logger.info(f"Admin {callback.from_user.id} started adding file after delete")
+        
+    except Exception as e:
+        logger.error(f"Error in add file after delete handler: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка.", show_alert=True)
+
+
+@router.callback_query(F.data == "admin_back_to_menu")
+async def handle_back_to_menu_from_delete(callback: CallbackQuery, role: str | None = None) -> None:
+    """Возвращает админа в меню после удаления файла."""
+    try:
+        if not await check_admin_access(callback.from_user.id):
+            await callback.answer("У вас нет доступа.", show_alert=True)
+            return
+        
+        await callback.message.edit_text(
+            "⚙️ Админ-панель\n\n"
+            "Выберите действие:"
+        )
+        await callback.message.answer(
+            "Выберите действие:",
+            reply_markup=get_admin_menu("ru")
+        )
+        await callback.answer("✅ Возврат в меню")
+        logger.info(f"Admin {callback.from_user.id} returned to admin menu")
+        
+    except Exception as e:
+        logger.error(f"Error in back to menu handler: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка.", show_alert=True)
+
+
+@router.message(Command("generate_invite"), IsAdmin())
+async def cmd_generate_invite(message: Message) -> None:
+    """Генерация инвайт-кода для администратора (команда)."""
+    try:
+        invite_code = settings.invite_code
+        await message.answer(
+            f"🔑 Текущий инвайт-код: `{invite_code}`\n\n"
+            "Поделись этим кодом с новыми сотрудниками для регистрации.",
+            parse_mode="Markdown"
+        )
+        logger.info(f"Admin {message.from_user.id} requested invite code via command")
+    except Exception as e:
+        logger.error(f"Error in /generate_invite handler: {e}", exc_info=True)
+        await message.answer("Произошла ошибка при генерации инвайт-кода.")
+
+
+@router.message(lambda message: message.text in [
+    "👥 Админы",
+    "👥 Әкімшілер",
+    "👥 Admins",
+    "👥 管理员"
+])
+async def handle_admins_button(message: Message, role: str | None = None, lang: str = "ru") -> None:
+    """Показывает список администраторов и кнопку добавления."""
+    try:
+        # Проверяем доступ через БД
+        async with AsyncSessionLocal() as session:
+            user_is_admin = await is_admin(session, message.from_user.id)
+            if not user_is_admin:
+                await message.answer("У вас нет доступа.")
+                return
+            
+            # Получаем список всех админов
+            admins = await get_all_admins(session)
+        
+        if not admins:
+            text = "👥 Управление администраторами\n\n"
+            text += "Список администраторов пуст."
+        else:
+            text = "👥 Управление администраторами\n\n"
+            text += f"Всего админов: {len(admins)}\n\n"
+            text += "Список администраторов:\n"
+            for admin in admins:
+                text += f"• ID: {admin.user_id} | Имя: {admin.username}\n"
+        
+        # Создаем inline-клавиатуру с кнопкой добавления
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="➕ Добавить админа",
+                        callback_data="admin_add_new"
+                    )
+                ]
+            ]
+        )
+        
+        await message.answer(text, reply_markup=keyboard)
+        logger.info(f"Admin {message.from_user.id} opened admins management")
+        
+    except Exception as e:
+        logger.error(f"Error in admins button handler: {e}", exc_info=True)
+        await message.answer("Произошла ошибка при загрузке списка админов.", reply_markup=get_admin_menu(lang))
+
+
+@router.callback_query(F.data == "admin_add_new")
+async def handle_add_new_admin_callback(callback: CallbackQuery, state: FSMContext, role: str | None = None) -> None:
+    """Начинает процесс добавления нового админа."""
+    try:
+        # Проверяем доступ через БД
+        async with AsyncSessionLocal() as session:
+            user_is_admin = await is_admin(session, callback.from_user.id)
+            if not user_is_admin:
+                await callback.answer("У вас нет доступа.", show_alert=True)
+                return
+        
+        # Переводим в состояние ожидания ID админа
+        await state.set_state(AdminState.wait_for_new_admin_id)
+        
+        await callback.message.edit_text(
+            "➕ Добавление нового администратора\n\n"
+            "Отправьте одно из следующего:\n"
+            "• Пересланное сообщение от пользователя, которого хотите сделать админом\n"
+            "• Или введите Telegram ID пользователя (число)\n\n"
+            "Для отмены нажмите /cancel"
+        )
+        await callback.answer("✅ Готов к добавлению админа")
+        logger.info(f"Admin {callback.from_user.id} started adding new admin")
+        
+    except Exception as e:
+        logger.error(f"Error in add new admin callback handler: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка.", show_alert=True)
+
+
+@router.message(Command("cancel"), StateFilter(AdminState.wait_for_new_admin_id))
+async def handle_cancel_add_admin(message: Message, state: FSMContext, role: str | None = None, lang: str = "ru") -> None:
+    """Отмена добавления админа."""
+    await state.clear()
+    # Проверяем доступ через БД
+    user_is_admin = await check_admin_access(message.from_user.id)
+    from app.core.i18n import i18n
+    await message.answer(
+        i18n.get("admin_cancel_admin", lang),
+        reply_markup=get_admin_menu(lang) if user_is_admin else await get_main_menu_for_user(message.from_user.id, role, lang)
+    )
+    logger.info(f"Admin {message.from_user.id} cancelled adding admin")
+
+
+@router.message(StateFilter(AdminState.wait_for_new_admin_id))
+async def handle_new_admin_id(
+    message: Message,
+    state: FSMContext,
+    role: str | None = None,
+    lang: str = "ru"
+) -> None:
+    """Обрабатывает ID нового админа (пересылка сообщения или ввод ID)."""
+    try:
+        # Проверяем доступ через БД
+        async with AsyncSessionLocal() as session:
+            user_is_admin = await is_admin(session, message.from_user.id)
+            if not user_is_admin:
+                await state.clear()
+                await message.answer("У вас нет доступа.")
+                return
+            
+            new_admin_id: int | None = None
+            new_admin_username: str = "Пользователь"
+            
+            # Проверяем, переслано ли сообщение
+            if message.forward_from:
+                new_admin_id = message.forward_from.id
+                new_admin_username = (
+                    message.forward_from.username or
+                    f"{message.forward_from.first_name or ''} {message.forward_from.last_name or ''}".strip() or
+                    "Пользователь"
+                )
+            elif message.text and message.text.strip().isdigit():
+                # Пользователь ввел ID вручную
+                new_admin_id = int(message.text.strip())
+                new_admin_username = f"ID_{new_admin_id}"
+            else:
+                await message.answer(
+                    "⚠️ Пожалуйста, отправьте пересланное сообщение от пользователя "
+                    "или введите его Telegram ID (число).\n\n"
+                    "Для отмены нажмите /cancel"
+                )
+                return
+            
+            if new_admin_id is None:
+                await message.answer(
+                    "⚠️ Не удалось определить ID пользователя.\n\n"
+                    "Попробуйте переслать сообщение от пользователя или ввести его ID вручную.\n\n"
+                    "Для отмены нажмите /cancel"
+                )
+                return
+            
+            # Проверяем, не является ли пользователь уже админом
+            is_already_admin = await is_admin(session, new_admin_id)
+            if is_already_admin:
+                await message.answer(
+                    f"ℹ️ Пользователь с ID {new_admin_id} уже является администратором.",
+                    reply_markup=get_admin_menu(lang)
+                )
+                await state.clear()
+                return
+            
+            # Добавляем нового админа
+            try:
+                await add_admin(session, new_admin_id, new_admin_username)
+                await state.clear()
+                
+                await message.answer(
+                    f"✅ Пользователь {new_admin_username} (ID: {new_admin_id}) теперь имеет доступ к админ-панели.",
+                    reply_markup=get_admin_menu(lang)
+                )
+                logger.info(f"Admin {message.from_user.id} added new admin: {new_admin_id} ({new_admin_username})")
+                
+            except Exception as e:
+                logger.error(f"Error adding admin {new_admin_id}: {e}", exc_info=True)
+                await message.answer(
+                    f"❌ Ошибка при добавлении админа:\n{str(e)}\n\n"
+                    "Попробуйте еще раз или нажмите /cancel для отмены.",
+                )
+        
+    except Exception as e:
+        logger.error(f"Error in new admin id handler: {e}", exc_info=True)
+        await state.clear()
+        # Проверяем доступ через БД
+        user_is_admin = await check_admin_access(message.from_user.id)
+        from app.core.i18n import i18n
+        await message.answer(
+            i18n.get("admin_processing_error", lang),
+            reply_markup=get_admin_menu(lang) if user_is_admin else await get_main_menu_for_user(message.from_user.id, role, lang)
+        )
+
+
+# ============================================================================
+# CALLBACK HANDLERS ДЛЯ ИЕРАРХИЧЕСКОГО МЕНЮ БАЗЫ ЗНАНИЙ
+# ============================================================================
+
+@router.callback_query(F.data.startswith("kb_dept:"))
+async def handle_kb_department_callback(callback: CallbackQuery, lang: str = "ru") -> None:
+    """Показывает список файлов в выбранном отделе."""
+    try:
+        # Проверяем доступ
+        if not await check_admin_access(callback.from_user.id):
+            await callback.answer("У вас нет доступа.", show_alert=True)
+            return
+        
+        from app.core.i18n import i18n
+        
+        # Извлекаем название отдела из callback_data
+        dept_name = callback.data.replace("kb_dept:", "")
+        
+        logger.info(f"Admin {callback.from_user.id} viewing files in department: {dept_name}")
+        
+        # Получаем список файлов в отделе
+        files = GeminiService.get_department_files(dept_name)
+        
+        # Маппинг для локализации названий отделов
+        dept_names = {
+            "common": i18n.get("kb_dept_common", lang),
+            "delivery": i18n.get("department_delivery", lang),
+            "sorting": i18n.get("department_sorting", lang),
+            "manager": i18n.get("department_manager", lang),
+            "customer_service": i18n.get("department_customer_service", lang),
+        }
+        
+        dept_display = dept_names.get(dept_name, dept_name.replace("_", " ").title())
+        
+        if not files:
+            # Нет файлов в отделе
+            text = i18n.get("kb_no_files_in_dept", lang)
+            
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text=i18n.get("back_to_depts", lang),
+                        callback_data="kb_view"
+                    )]
+                ]
+            )
+            
+            await callback.message.edit_text(text, reply_markup=keyboard)
+            await callback.answer()
+            return
+        
+        # Формируем текст и клавиатуру
+        text = i18n.get("kb_files_in_dept", lang).format(dept=dept_display)
+        text += f"\n\n📊 {i18n.get('kb_total', lang)}: {len(files)} {i18n.get('kb_documents', lang)}"
+        
+        buttons: list[list[InlineKeyboardButton]] = []
+        
+        for file_info in files:
+            # Кнопка для каждого файла
+            buttons.append([
+                InlineKeyboardButton(
+                    text=f"📄 {file_info['name']} ({file_info['size']})",
+                    callback_data=f"kb_file:{dept_name}:{file_info['name']}"
+                )
+            ])
+        
+        # Кнопка "Назад к отделам"
+        buttons.append([
+            InlineKeyboardButton(
+                text=i18n.get("back_to_depts", lang),
+                callback_data="kb_view"
+            )
+        ])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"Error in kb_department callback handler: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка.", show_alert=True)
+
+
+@router.callback_query(F.data == "kb_view")
+async def handle_kb_view_callback(callback: CallbackQuery, lang: str = "ru") -> None:
+    """Возвращает к списку отделов."""
+    try:
+        # Проверяем доступ
+        if not await check_admin_access(callback.from_user.id):
+            await callback.answer("У вас нет доступа.", show_alert=True)
+            return
+        
+        from app.core.i18n import i18n
+        
+        # Получаем статистику по отделам
+        stats = GeminiService.get_knowledge_stats()
+        
+        if not stats:
+            text = i18n.get("kb_empty", lang)
+            await callback.message.edit_text(text)
+            await callback.answer()
+            return
+        
+        # Маппинг для локализации названий отделов
+        dept_names = {
+            "common": i18n.get("kb_dept_common", lang),
+            "delivery": i18n.get("department_delivery", lang),
+            "sorting": i18n.get("department_sorting", lang),
+            "manager": i18n.get("department_manager", lang),
+            "customer_service": i18n.get("department_customer_service", lang),
+        }
+        
+        # Создаем inline-клавиатуру с отделами
+        buttons: list[list[InlineKeyboardButton]] = []
+        
+        for dept_key in sorted(stats.keys()):
+            count = stats[dept_key]
+            dept_display = dept_names.get(dept_key, dept_key.replace("_", " ").title())
+            
+            buttons.append([
+                InlineKeyboardButton(
+                    text=f"📂 {dept_display} ({count})",
+                    callback_data=f"kb_dept:{dept_key}"
+                )
+            ])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        
+        text = i18n.get("kb_select_department", lang)
+        total_files = sum(stats.values())
+        text += f"\n\n📊 {i18n.get('kb_total', lang)}: {total_files} {i18n.get('kb_documents', lang)}"
+        
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"Error in kb_view callback handler: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("kb_file:"))
+async def handle_kb_file_callback(callback: CallbackQuery, lang: str = "ru") -> None:
+    """Показывает информацию о файле и кнопку удаления."""
+    try:
+        # Проверяем доступ
+        if not await check_admin_access(callback.from_user.id):
+            await callback.answer("У вас нет доступа.", show_alert=True)
+            return
+        
+        from app.core.i18n import i18n
+        
+        # Парсим callback_data: kb_file:dept_name:filename
+        parts = callback.data.split(":", 2)
+        if len(parts) != 3:
+            await callback.answer("Ошибка в формате данных.", show_alert=True)
+            return
+        
+        dept_name = parts[1]
+        filename = parts[2]
+        
+        logger.info(f"Admin {callback.from_user.id} viewing file: {dept_name}/{filename}")
+        
+        # Получаем информацию о файле
+        files = GeminiService.get_department_files(dept_name)
+        file_info = None
+        for f in files:
+            if f["name"] == filename:
+                file_info = f
+                break
+        
+        if not file_info:
+            await callback.answer("Файл не найден.", show_alert=True)
+            return
+        
+        # Маппинг для локализации названий отделов
+        dept_names = {
+            "common": i18n.get("kb_dept_common", lang),
+            "delivery": i18n.get("department_delivery", lang),
+            "sorting": i18n.get("department_sorting", lang),
+            "manager": i18n.get("department_manager", lang),
+            "customer_service": i18n.get("department_customer_service", lang),
+        }
+        
+        dept_display = dept_names.get(dept_name, dept_name.replace("_", " ").title())
+        
+        # Формируем текст с информацией о файле
+        text = i18n.get("kb_file_info", lang).format(
+            filename=filename,
+            size=file_info["size"],
+            dept=dept_display
+        )
+        
+        # Создаем клавиатуру с кнопками
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(
+                    text=i18n.get("kb_delete_button", lang),
+                    callback_data=f"kb_del:{dept_name}:{filename}"
+                )],
+                [InlineKeyboardButton(
+                    text=i18n.get("back_to_files", lang),
+                    callback_data=f"kb_dept:{dept_name}"
+                )],
+                [InlineKeyboardButton(
+                    text=i18n.get("back_to_depts", lang),
+                    callback_data="kb_view"
+                )]
+            ]
+        )
+        
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"Error in kb_file callback handler: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("kb_del:"))
+async def handle_kb_delete_callback(callback: CallbackQuery, lang: str = "ru") -> None:
+    """Удаляет файл из базы знаний и обновляет индекс."""
+    try:
+        # Проверяем доступ
+        if not await check_admin_access(callback.from_user.id):
+            await callback.answer("У вас нет доступа.", show_alert=True)
+            return
+        
+        from app.core.i18n import i18n
+        
+        # Парсим callback_data: kb_del:dept_name:filename
+        parts = callback.data.split(":", 2)
+        if len(parts) != 3:
+            await callback.answer("Ошибка в формате данных.", show_alert=True)
+            return
+        
+        dept_name = parts[1]
+        filename = parts[2]
+        
+        logger.info(f"Admin {callback.from_user.id} deleting file: {dept_name}/{filename}")
+        
+        # Показываем статус удаления
+        await callback.message.edit_text(i18n.get("kb_deleting", lang))
+        
+        try:
+            # Удаляем файл и обновляем индекс
+            success = GeminiService.delete_document(dept_name, filename)
+            
+            if success:
+                # Файл успешно удален
+                text = i18n.get("file_deleted", lang)
+                
+                # Возвращаемся к списку файлов отдела
+                keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(
+                            text=i18n.get("back_to_files", lang),
+                            callback_data=f"kb_dept:{dept_name}"
+                        )],
+                        [InlineKeyboardButton(
+                            text=i18n.get("back_to_depts", lang),
+                            callback_data="kb_view"
+                        )]
+                    ]
+                )
+                
+                await callback.message.edit_text(text, reply_markup=keyboard)
+                await callback.answer(f"✅ {filename} удален", show_alert=False)
+                
+                logger.info(f"Admin {callback.from_user.id} deleted file successfully: {dept_name}/{filename}")
+            else:
+                await callback.answer("Не удалось удалить файл.", show_alert=True)
+                
+        except FileNotFoundError as e:
+            logger.error(f"File not found: {e}")
+            await callback.answer(f"Файл не найден: {filename}", show_alert=True)
+            # Возвращаемся к списку файлов
+            await callback.message.edit_text(
+                "❌ Файл не найден.",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(
+                            text=i18n.get("back_to_files", lang),
+                            callback_data=f"kb_dept:{dept_name}"
+                        )]
+                    ]
+                )
+            )
+        except Exception as delete_error:
+            logger.error(f"Error deleting file: {delete_error}", exc_info=True)
+            await callback.answer(f"Ошибка при удалении: {str(delete_error)}", show_alert=True)
+            # Возвращаемся к списку файлов
+            await callback.message.edit_text(
+                f"❌ Ошибка при удалении файла:\n{str(delete_error)}",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(
+                            text=i18n.get("back_to_files", lang),
+                            callback_data=f"kb_dept:{dept_name}"
+                        )]
+                    ]
+                )
+            )
+        
+    except Exception as e:
+        logger.error(f"Error in kb_delete callback handler: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка.", show_alert=True)

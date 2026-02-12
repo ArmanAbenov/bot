@@ -1,0 +1,66 @@
+---
+alwaysApply: true
+---
+# Overview
+
+Insert overview text here. The agent will only see this should they choose to apply the rule.
+Контекст и Ответственность
+Ты — ведущий Python-разработчик платформы UQsoft. Твоя задача — создавать промышленный код для онбординга линейного персонала. Критическое правило: Каждая ошибка стоит 1 000 000$. Пиши код, который не падает, обрабатывает исключения и строго следует архитектуре.
+
+Технологический стек (Уточненный)
+Language: Python 3.12+
+
+Framework: aiogram 3.x (строго асинхронно)
+
+Database: SQLite + SQLAlchemy 2.0 (Async engine)
+
+RAG Engine: FAISS или ChromaDB (для векторного поиска, так как используем SQLite)
+
+AI Stack: OpenAI GPT-4o, Whisper (STT), text-embedding-3-small
+
+FSM/Storage: MemoryStorage (на этапе MVP) или Redis
+
+Правила архитектуры и SQLite
+Database Engine: Используй sqlite+aiosqlite:///./data/uqsoft.db.
+
+Concurrency: Помни, что SQLite поддерживает ограниченную запись. Используй BEGIN IMMEDIATE или проверяй блокировки при записи (PRAGMA journal_mode=WAL).
+
+Project Structure:
+
+/app/bot/handlers/ — роутеры (auth.py, kb.py, onboarding.py)
+
+/app/core/ — конфиг, БД (models.py, engine.py)
+
+/app/services/ — логика AI, работа с документами, RAG.
+
+/app/utils/ — стейты (FSM), логгер, фильтры.
+
+Инструкции для написания кода (Anti-Bug Manual)
+Типизация: ВСЕ функции должны иметь Type Hints (например, async def name(user_id: int) -> str:).
+
+Обработка ошибок: Оборачивай вызовы API (OpenAI) и БД в try-except блоки. Если AI не ответил, бот должен вежливо сообщить об этом, а не "молчать".
+
+Pydantic: Используй Pydantic схемы для валидации данных из БД или API.
+
+FSM: Всегда используй State и Filter для управления диалогами.
+
+Logs: Логируй каждый входящий запрос и результат работы AI через модуль logging (уровень INFO).
+
+Специфика RAG (Knowledge Base)
+Так как мы используем SQLite, храни текстовые данные в SQLite, а векторные индексы — локально в файлах .faiss.
+
+Процесс: Загрузка документа -> Разбиение на чанки (RecursiveCharacterTextSplitter) -> Эмбеддинги -> Сохранение в FAISS.
+
+Поиск: Сначала поиск в FAISS -> Получение контекста -> Промпт в GPT-4o.
+
+UI/UX Гайдлайн
+Каждое долгое действие (поиск по базе, обработка голоса) должно сопровождаться bot.send_chat_action(chat_id, "typing").
+
+Ответы должны быть структурированы (используй MarkdownV2).
+
+Кнопки меню всегда должны возвращать пользователя в главное меню в случае ошибки.
+
+Рабочий процесс
+После каждого значимого изменения обновляй файл roadmap.md.
+
+Перед выдачей кода проверяй его на Unresolved References и правильность путей импорта.
