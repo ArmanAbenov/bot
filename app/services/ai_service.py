@@ -68,6 +68,18 @@ class GeminiService:
     _vector_store: VectorStore | None = None
     
     @staticmethod
+    async def reload_indices() -> None:
+        """
+        Перезагружает все индексы из базы данных.
+        Используется после изменений в админке (добавление/удаление файлов, изменение ролей).
+        """
+        logger.info("[RAG] 🔄 Reloading all indices...")
+        GeminiService._vector_stores = {}
+        GeminiService._vector_store = None
+        GeminiService._create_department_indices()
+        logger.info("[RAG] ✅ Indices reloaded successfully")
+    
+    @staticmethod
     def rebuild_index_for_department(department: str) -> None:
         """
         Точечное обновление индекса конкретного отдела (оптимизация).

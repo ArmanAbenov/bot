@@ -652,11 +652,11 @@ async def handle_delete_file(callback: CallbackQuery, role: str | None = None) -
             
             # Обновляем векторный индекс в памяти
             try:
-                logger.info("[RAG] Rebuilding department indices after file deletion...")
-                GeminiService._create_department_indices()
-                logger.info("[RAG] Department indices updated successfully")
+                logger.info("[RAG] Reloading indices after file deletion...")
+                await GeminiService.reload_indices()
+                logger.info("[RAG] Indices reloaded successfully")
             except Exception as e:
-                logger.error(f"[RAG] Error updating vector index: {e}", exc_info=True)
+                logger.error(f"[RAG] Error reloading indices: {e}", exc_info=True)
                 # Не прерываем процесс, просто логируем ошибку
             
             # Обновляем список файлов
@@ -820,6 +820,37 @@ async def cmd_generate_invite(message: Message) -> None:
     except Exception as e:
         logger.error(f"Error in /generate_invite handler: {e}", exc_info=True)
         await message.answer("Произошла ошибка при генерации инвайт-кода.")
+
+
+@router.message(Command("reload"))
+async def cmd_reload_indices(message: Message) -> None:
+    """Команда для ручной перезагрузки RAG индексов."""
+    try:
+        if not await check_admin_access(message.from_user.id):
+            await message.answer("❌ У вас нет доступа к этой команде.")
+            return
+        
+        await message.answer("🔄 Начинаю перезагрузку индексов RAG...")
+        logger.info(f"[RELOAD] Admin {message.from_user.id} triggered manual index reload")
+        
+        # Перезагружаем индексы
+        await GeminiService.reload_indices()
+        
+        # Получаем статистику после перезагрузки
+        stats_text = f"✅ Индексы успешно перезагружены!\n\n"
+        stats_text += f"📊 Загружено отделов: {len(GeminiService._vector_stores)}\n"
+        
+        for dept_name, store in GeminiService._vector_stores.items():
+            if store and store.index:
+                chunk_count = store.index.ntotal if hasattr(store.index, 'ntotal') else len(store.chunks)
+                stats_text += f"  • {dept_name}: {chunk_count} чанков\n"
+        
+        await message.answer(stats_text)
+        logger.info(f"[RELOAD] Index reload completed successfully for admin {message.from_user.id}")
+        
+    except Exception as e:
+        logger.error(f"[RELOAD] Error reloading indices: {e}", exc_info=True)
+        await message.answer(f"❌ Ошибка при перезагрузке индексов:\n{str(e)}")
 
 
 @router.message(lambda message: message.text in [
