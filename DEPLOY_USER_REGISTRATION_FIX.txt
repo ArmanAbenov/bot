@@ -1,0 +1,57 @@
+# ===================================================================
+# 🚨 СРОЧНЫЙ ДЕПЛОЙ: Исправление регистрации пользователя в БД
+# ===================================================================
+# Проблема: "User NOT found in DB! Cannot change language."
+# Решение: Создаем user в БД СРАЗУ при /start (с language=None)
+# ===================================================================
+
+# 1️⃣ Проверка статуса
+git status
+
+# 2️⃣ Добавление файлов
+git add app/bot/handlers/start.py app/utils/department.py CRITICAL_FIX_USER_REGISTRATION.md DEPLOY_USER_REGISTRATION_FIX.txt
+
+# 3️⃣ Коммит
+git commit -m "CRITICAL FIX: Create user in DB immediately on /start
+
+- User is now created in DB on /start with language=None and department=None
+- Language selection handler updates existing user instead of creating new one
+- Invite code handler verifies user exists without creating duplicate
+- Department selection uses direct assignment + session.refresh() for verification
+- Added extensive [START], [LANGUAGE], [INVITE], [DEPT] logging for Railway
+- Fixes 'User NOT found in DB! Cannot change language' error"
+
+# 4️⃣ Push на Railway (автодеплой)
+git push origin main
+
+# ===================================================================
+# ⏱️ Время деплоя: ~2-3 минуты
+# 📊 Ожидаемые логи после /start:
+#
+# [START] New user {telegram_id} - creating in DB immediately
+# [START] ✅ User {telegram_id} CREATED in DB: id=1, role=employee, language=None
+# [START] Database path: /app/persist/uqsoft.db
+# [START] Language selection shown to user {telegram_id}
+#
+# После выбора языка:
+# [LANGUAGE] ✅ User {telegram_id} language VERIFIED in DB: ru
+# [LANGUAGE] ✅ SUCCESS: Language persisted correctly in DB
+#
+# После выбора отдела:
+# [DEPT] ✅ User {telegram_id} department VERIFIED in DB: sorting
+# [DEPT] ✅ SUCCESS: Department persisted correctly in DB
+# ===================================================================
+
+# 🔍 Мониторинг логов Railway:
+railway logs --follow
+
+# Или в Railway Dashboard:
+# Deployments -> Latest -> View logs
+
+# ===================================================================
+# ✅ Признаки успешного деплоя:
+# 1. В логах Railway есть [START] ✅ User CREATED in DB
+# 2. После выбора языка есть [LANGUAGE] ✅ SUCCESS: Language persisted correctly
+# 3. Middleware больше НЕ пишет "User not found in DB"
+# 4. Бот не запрашивает язык повторно при следующем /start
+# ===================================================================

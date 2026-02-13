@@ -46,15 +46,38 @@ async def set_user_department(session: AsyncSession, user_id: int, department: s
         True если успешно, False иначе
     """
     try:
-        stmt = (
-            update(User)
-            .where(User.telegram_id == user_id)
-            .values(department=department)
-        )
-        await session.execute(stmt)
+        from sqlalchemy import select
+        
+        # КРИТИЧНО: Сначала находим пользователя
+        stmt_select = select(User).where(User.telegram_id == user_id)
+        result = await session.execute(stmt_select)
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            logger.error(f"[DEPT] ❌ CRITICAL: User {user_id} NOT found in DB!")
+            return False
+        
+        logger.info(f"[DEPT] User {user_id} found: id={user.id}, current_dept={user.department}, language={user.language}")
+        
+        # Обновляем отдел через прямое присваивание
+        old_dept = user.department
+        user.department = department
         await session.commit()
         
-        logger.info(f"[DEPT] User {user_id} assigned to department: {department}")
+        logger.info(f"[DEPT] COMMIT executed for user {user_id}")
+        
+        # КРИТИЧНО: Проверяем что сохранилось
+        await session.refresh(user)
+        logger.info(f"[DEPT] ✅ User {user_id} department VERIFIED in DB: {user.department} (was: {old_dept}, set to: {department})")
+        
+        if user.department != department:
+            logger.error(f"[DEPT] ❌ CRITICAL: Department NOT saved! DB={user.department}, expected={department}")
+            from app.core.config import settings
+            logger.error(f"[DEPT] Database path: {settings.database_path}")
+            return False
+        else:
+            logger.info(f"[DEPT] ✅ SUCCESS: Department persisted correctly in DB")
+        
         return True
     except Exception as e:
         logger.error(f"[DEPT] Error setting department for user {user_id}: {e}", exc_info=True)

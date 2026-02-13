@@ -46,7 +46,25 @@ async def cmd_start(message: Message, state: FSMContext, role: str | None = None
             user = result.scalar_one_or_none()
 
             if user is None:
-                # Новый пользователь - сначала выбор языка
+                # Новый пользователь - СОЗДАЕМ В БД СРАЗУ с временными данными
+                logger.info(f"[START] New user {telegram_id} - creating in DB immediately")
+                
+                # Создаем пользователя с language=None (будет обновлен после выбора)
+                user = User(
+                    telegram_id=telegram_id,
+                    full_name=full_name,
+                    role="admin" if user_is_admin else "employee",
+                    department=None,  # Будет выбран позже
+                    language=None,  # Будет выбран в следующем шаге
+                )
+                session.add(user)
+                await session.commit()
+                await session.refresh(user)
+                
+                logger.info(f"[START] ✅ User {telegram_id} CREATED in DB: id={user.id}, role={user.role}, language={user.language}")
+                logger.info(f"[START] Database path: {settings.database_path}")
+                
+                # Переводим в состояние выбора языка
                 await state.set_state(RegistrationState.waiting_for_language)
                 await state.update_data(
                     telegram_id=telegram_id,
@@ -59,7 +77,7 @@ async def cmd_start(message: Message, state: FSMContext, role: str | None = None
                     "Выберите язык / Тілді таңдаңыз / Choose language / 选择语言",
                     reply_markup=get_language_selection_keyboard()
                 )
-                logger.info(f"New user {telegram_id} - showing language selection")
+                logger.info(f"[START] Language selection shown to user {telegram_id}")
                 return
             else:
                 # Обновляем имя, если изменилось
@@ -287,7 +305,7 @@ async def handle_back_from_questions(
 
 @router.callback_query(lambda c: c.data and c.data.startswith("lang_"), StateFilter(RegistrationState.waiting_for_language))
 async def handle_language_selection(callback: CallbackQuery, state: FSMContext) -> None:
-    """Обработчик выбора языка при регистрации."""
+    """Обработчик выбора языка при регистрации (пользователь УЖЕ создан в БД при /start)."""
     try:
         # Получаем выбранный язык из callback_data (формат: lang_ru, lang_kk и т.д.)
         selected_lang = callback.data.replace("lang_", "")
@@ -299,32 +317,46 @@ async def handle_language_selection(callback: CallbackQuery, state: FSMContext) 
         # Получаем данные из FSM
         data = await state.get_data()
         telegram_id = data.get("telegram_id")
-        full_name = data.get("full_name")
         is_admin = data.get("is_admin", False)
         
-        logger.info(f"[LANGUAGE] User {telegram_id} selected language: {selected_lang}")
+        logger.info(f"[LANGUAGE] User {telegram_id} selected language: {selected_lang}, is_admin={is_admin}")
         
         # Инициализируем i18n для использования
         from app.core.i18n import i18n
         
         async with AsyncSessionLocal() as session:
+            # КРИТИЧНО: Пользователь УЖЕ существует в БД (создан при /start)
+            # Просто ОБНОВЛЯЕМ язык
+            stmt = select(User).where(User.telegram_id == telegram_id)
+            result = await session.execute(stmt)
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                logger.error(f"[LANGUAGE] ❌ CRITICAL: User {telegram_id} NOT found in DB after /start!")
+                await callback.answer("Ошибка: пользователь не найден. Попробуйте /start снова.", show_alert=True)
+                return
+            
+            logger.info(f"[LANGUAGE] User {telegram_id} found in DB: id={user.id}, current_lang={user.language}, role={user.role}")
+            
+            # Обновляем язык
+            old_lang = user.language
+            user.language = selected_lang
+            await session.commit()
+            
+            logger.info(f"[LANGUAGE] COMMIT executed for user {telegram_id}")
+            
+            # КРИТИЧНО: Проверяем что сохранилось
+            await session.refresh(user)
+            logger.info(f"[LANGUAGE] ✅ User {telegram_id} language VERIFIED in DB: {user.language} (was: {old_lang}, set to: {selected_lang})")
+            
+            if user.language != selected_lang:
+                logger.error(f"[LANGUAGE] ❌ CRITICAL: Language NOT saved! DB={user.language}, expected={selected_lang}")
+                logger.error(f"[LANGUAGE] Database path: {settings.database_path}")
+            else:
+                logger.info(f"[LANGUAGE] ✅ SUCCESS: Language persisted correctly in DB")
+            
             if is_admin:
-                # Админ - создаем сразу с выбранным языком
-                user = User(
-                    telegram_id=telegram_id,
-                    full_name=full_name,
-                    role="admin",
-                    department=None,
-                    language=selected_lang,
-                )
-                session.add(user)
-                await session.commit()
-                await session.refresh(user)
-                
-                logger.info(f"[LANGUAGE] ✅ Admin user created: {telegram_id} with language={selected_lang}, saved to DB")
-                logger.info(f"[LANGUAGE] User object: id={user.id}, telegram_id={user.telegram_id}, language={user.language}")
-                
-                # Отправляем приветствие на выбранном языке
+                # Админ - завершаем регистрацию
                 role_display = i18n.get("role_admin", selected_lang)
                 welcome_text = f"{i18n.get('welcome_text', selected_lang)} {i18n.get('your_role', selected_lang, role=role_display)}"
                 
@@ -336,7 +368,7 @@ async def handle_language_selection(callback: CallbackQuery, state: FSMContext) 
                 
                 # Очищаем FSM
                 await state.clear()
-                logger.info(f"[LANGUAGE] FSM cleared for user {telegram_id}")
+                logger.info(f"[LANGUAGE] FSM cleared for admin {telegram_id} - registration complete")
                 await callback.answer()
             else:
                 # Обычный пользователь - сохраняем язык и запрашиваем инвайт-код
@@ -344,7 +376,7 @@ async def handle_language_selection(callback: CallbackQuery, state: FSMContext) 
                 await callback.message.edit_text(i18n.get("registration_invite_code", selected_lang))
                 await callback.answer()
                 
-                logger.info(f"[LANGUAGE] User {telegram_id} - waiting for invite code (language={selected_lang})")
+                logger.info(f"[LANGUAGE] User {telegram_id} - waiting for invite code (language saved: {selected_lang})")
                 
     except Exception as e:
         logger.error(f"[LANGUAGE] Error in language selection handler: {e}", exc_info=True)
@@ -358,14 +390,13 @@ async def handle_language_selection(callback: CallbackQuery, state: FSMContext) 
 async def handle_invite_code_after_language(
     message: Message, state: FSMContext
 ) -> None:
-    """Обработчик инвайт-кода после выбора языка (для новых пользователей)."""
+    """Обработчик инвайт-кода после выбора языка (пользователь УЖЕ существует в БД)."""
     try:
         from app.core.i18n import i18n
         
         # Получаем данные из FSM
         data = await state.get_data()
         telegram_id = data.get("telegram_id")
-        full_name = data.get("full_name")
         selected_lang = data.get("selected_language", "ru")
         
         invite_code = message.text.strip()
@@ -378,21 +409,20 @@ async def handle_invite_code_after_language(
             logger.info(f"[INVITE] ❌ Wrong invite code for user {telegram_id}: '{invite_code}' (expected: '{settings.invite_code}')")
             return
 
-        # Создаем нового пользователя с ролью employee и выбранным языком
+        # КРИТИЧНО: Пользователь УЖЕ создан в БД при /start
+        # Просто проверяем что язык сохранен
         async with AsyncSessionLocal() as session:
-            user = User(
-                telegram_id=telegram_id,
-                full_name=full_name,
-                role="employee",
-                department=None,  # Пока не выбран
-                language=selected_lang,
-            )
-            session.add(user)
-            await session.commit()
-            await session.refresh(user)
-
-            logger.info(f"[INVITE] ✅ New user registered: {telegram_id} ({full_name}) with language={selected_lang}")
-            logger.info(f"[INVITE] User saved to DB: id={user.id}, telegram_id={user.telegram_id}, language={user.language}, role={user.role}")
+            stmt = select(User).where(User.telegram_id == telegram_id)
+            result = await session.execute(stmt)
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                logger.error(f"[INVITE] ❌ CRITICAL: User {telegram_id} NOT found in DB!")
+                await message.answer("Ошибка: пользователь не найден. Попробуйте /start снова.")
+                return
+            
+            logger.info(f"[INVITE] User {telegram_id} found in DB: id={user.id}, role={user.role}, language={user.language}")
+            logger.info(f"[INVITE] ✅ Invite code correct, user can proceed to department selection")
 
             # Переводим в состояние выбора отдела
             await state.set_state(RegistrationState.waiting_for_department)

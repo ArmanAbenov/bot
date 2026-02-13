@@ -1,0 +1,17 @@
+# ============================================
+# 🚀 БЫСТРЫЙ ДЕПЛОЙ - КОПИРУЙ И ВСТАВЬ
+# ============================================
+
+git add app/bot/handlers/start.py app/utils/department.py CRITICAL_FIX_USER_REGISTRATION.md DEPLOY_USER_REGISTRATION_FIX.txt QUICK_DEPLOY.txt && git commit -m "CRITICAL FIX: Create user in DB immediately on /start" && git push origin main
+
+# ============================================
+# После push:
+# 1. Открой Railway Dashboard
+# 2. Смотри логи деплоя (2-3 минуты)
+# 3. Тестируй бот: /start -> выбор языка -> инвайт-код -> отдел
+# 
+# Ожидаемые логи:
+# [START] ✅ User CREATED in DB
+# [LANGUAGE] ✅ SUCCESS: Language persisted
+# [DEPT] ✅ SUCCESS: Department persisted
+# ============================================
