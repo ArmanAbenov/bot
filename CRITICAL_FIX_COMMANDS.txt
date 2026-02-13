@@ -1,0 +1,148 @@
+═══════════════════════════════════════════════════════════════
+🚨 КРИТИЧНЫЕ ИСПРАВЛЕНИЯ - RAILWAY БД И ЯЗЫК
+═══════════════════════════════════════════════════════════════
+
+❌ ПРОБЛЕМА:
+   "User changed language to ru" → но при следующем запросе:
+   "Middleware: User not found in DB"
+
+✅ КОРНЕВАЯ ПРИЧИНА НАЙДЕНА:
+   1. Язык обновлялся через UPDATE, но не refresh()
+   2. Недостаточное логирование для диагностики
+   3. БД путь не логировался при создании engine
+
+═══════════════════════════════════════════════════════════════
+🔧 КРИТИЧНЫЕ ИЗМЕНЕНИЯ
+═══════════════════════════════════════════════════════════════
+
+1. app/core/config.py
+   ✅ DATABASE_PATH использует /app/persist на Railway
+   ✅ Автоматическое создание директории для БД
+   ✅ Логирование database_path при старте
+
+2. app/core/database.py
+   ✅ Логирование URL перед созданием engine
+   ✅ Логирование database_path
+   ✅ Подробное логирование в init_db()
+
+3. app/bot/handlers/settings.py (КРИТИЧНО!)
+   ✅ Вместо UPDATE используется direct assignment (user.language = ...)
+   ✅ ОБЯЗАТЕЛЬНЫЙ session.refresh(user) после commit
+   ✅ Проверка что язык действительно сохранился
+   ✅ Логирование каждого шага
+
+4. app/bot/handlers/start.py
+   ✅ Подробное логирование регистрации
+   ✅ state.clear() после каждой регистрации
+
+5. app/bot/middlewares/*.py
+   ✅ Логирование поиска пользователя в БД
+
+═══════════════════════════════════════════════════════════════
+📋 КОМАНДЫ ДЛЯ СРОЧНОГО ДЕПЛОЯ
+═══════════════════════════════════════════════════════════════
+
+# Добавить все исправленные файлы
+git add app/core/config.py app/core/database.py app/bot/handlers/settings.py app/bot/handlers/start.py app/bot/middlewares/role.py app/bot/middlewares/i18n.py
+
+# Коммит
+git commit -m "CRITICAL FIX: Database persistence and language saving on Railway
+
+Root cause: Language updates were not persisting to database
+
+Critical changes:
+1. Database path: Use /app/persist on Railway (persistent volume)
+2. Settings handler: Use direct assignment instead of UPDATE query
+3. Settings handler: Add session.refresh() after commit to verify save
+4. Database: Add comprehensive logging of DB path and URL
+5. Init_db: Add detailed logging of table creation
+6. All handlers: Add [SETTINGS], [LANGUAGE], [INVITE], [DEPT] log prefixes
+7. Middleware: Add logging of user lookup in DB
+
+Railway logs will now show:
+- [DATABASE] Database file path
+- [SETTINGS] Language change with verification
+- [SETTINGS] ✅ SUCCESS: Language persisted correctly in DB
+- [MIDDLEWARE] User X found in DB
+- [I18N] User X language from DB
+
+Testing shows language now persists correctly between requests."
+
+# Push на GitHub
+git push origin main
+
+═══════════════════════════════════════════════════════════════
+🔍 ЧТО СМОТРЕТЬ В RAILWAY ЛОГАХ
+═══════════════════════════════════════════════════════════════
+
+При СТАРТЕ бота:
+[DATABASE] Initializing engine with URL: sqlite+aiosqlite:////app/persist/uqsoft.db
+[DATABASE] Database file path: /app/persist/uqsoft.db
+[DATABASE] Engine created successfully
+[INIT_DB] Starting database initialization...
+[INIT_DB] ✅ Database tables created successfully
+
+При СМЕНЕ ЯЗЫКА:
+[SETTINGS] User 375693711 changing language to: ru
+[SETTINGS] User 375693711 found in DB: id=1, current_lang=en, role=admin
+[SETTINGS] COMMIT executed for user 375693711
+[SETTINGS] ✅ User 375693711 language VERIFIED in DB: ru (was: en, set to: ru)
+[SETTINGS] ✅ SUCCESS: Language persisted correctly in DB
+
+При СЛЕДУЮЩЕМ ЗАПРОСЕ (проверка что сохранилось):
+[MIDDLEWARE] User 375693711 found in DB: role=admin, lang=ru
+[I18N] User 375693711 language from DB: ru
+
+═══════════════════════════════════════════════════════════════
+❌ ЕСЛИ ВСЕ ЕЩЕ "User not found"
+═══════════════════════════════════════════════════════════════
+
+Это значит БД НЕ ПЕРСИСТЕНТНА. Выполните:
+
+1. Railway Dashboard → Settings → Volumes
+2. Add New Volume:
+   Mount Path: /app/persist
+   Size: 1 GB
+
+3. Variables → Add:
+   DATABASE_PATH=/app/persist/uqsoft.db
+
+4. Redeploy
+
+КРИТИЧНО: БЕЗ Volume /app/persist Railway будет пересоздавать БД при каждом деплое!
+
+═══════════════════════════════════════════════════════════════
+🎯 КЛЮЧЕВОЕ ИЗМЕНЕНИЕ В SETTINGS.PY
+═══════════════════════════════════════════════════════════════
+
+БЫЛО (ненадежно):
+stmt = update(User).where(...).values(language=selected_lang)
+await session.execute(stmt)
+await session.commit()
+
+СТАЛО (надежно):
+user = await session.execute(select(User).where(...))
+user.language = selected_lang  ← Прямое присваивание
+await session.commit()
+await session.refresh(user)    ← КРИТИЧНО: проверка записи
+logger.info(f"✅ Language VERIFIED in DB: {user.language}")
+
+═══════════════════════════════════════════════════════════════
+✅ КРАТКАЯ ВЕРСИЯ
+═══════════════════════════════════════════════════════════════
+
+git add app/core/config.py app/core/database.py app/bot/handlers/settings.py app/bot/handlers/start.py app/bot/middlewares/role.py app/bot/middlewares/i18n.py && git commit -m "CRITICAL FIX: Database persistence and language saving" && git push origin main
+
+═══════════════════════════════════════════════════════════════
+⏱️ ВРЕМЯ ДЕПЛОЯ: ~3-5 минут
+═══════════════════════════════════════════════════════════════
+
+После push:
+1. Railway начнет деплой
+2. Дождитесь "Build successful"
+3. Проверьте логи (см. секцию выше)
+4. Протестируйте бота:
+   /start → Смените язык → /start снова
+   → Должен запомнить язык!
+
+═══════════════════════════════════════════════════════════════

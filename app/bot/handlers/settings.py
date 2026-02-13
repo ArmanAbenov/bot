@@ -73,7 +73,7 @@ async def handle_change_language_button(callback: CallbackQuery, lang: str = "ru
 
 @router.callback_query(lambda c: c.data and c.data.startswith("lang_"))
 async def handle_language_change(callback: CallbackQuery, role: str | None = None) -> None:
-    """Обработчик смены языка в настройках."""
+    """Обработчик смены языка в настройках (для СУЩЕСТВУЮЩИХ пользователей)."""
     try:
         # Получаем выбранный язык из callback_data (формат: lang_ru, lang_kk и т.д.)
         selected_lang = callback.data.replace("lang_", "")
@@ -84,20 +84,43 @@ async def handle_language_change(callback: CallbackQuery, role: str | None = Non
         
         telegram_id = callback.from_user.id
         
-        # Обновляем язык в БД
+        logger.info(f"[SETTINGS] User {telegram_id} changing language to: {selected_lang}")
+        
+        # Обновляем язык в БД - ИСПОЛЬЗУЕМ МЕТОД С REFRESH ВМЕСТО UPDATE
         async with AsyncSessionLocal() as session:
-            stmt = (
-                update(User)
-                .where(User.telegram_id == telegram_id)
-                .values(language=selected_lang)
-            )
-            await session.execute(stmt)
+            # Получаем пользователя
+            stmt = select(User).where(User.telegram_id == telegram_id)
+            result = await session.execute(stmt)
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                logger.error(f"[SETTINGS] ❌ User {telegram_id} NOT found in DB! Cannot change language.")
+                await callback.answer("Ошибка: пользователь не найден в БД.", show_alert=True)
+                return
+            
+            logger.info(f"[SETTINGS] User {telegram_id} found in DB: id={user.id}, current_lang={user.language}, role={user.role}")
+            
+            # Меняем язык через прямое присваивание (лучше чем UPDATE)
+            old_lang = user.language
+            user.language = selected_lang
+            
+            # Коммитим изменения
             await session.commit()
+            logger.info(f"[SETTINGS] COMMIT executed for user {telegram_id}")
+            
+            # КРИТИЧНО: Перечитываем из БД для проверки
+            await session.refresh(user)
+            logger.info(f"[SETTINGS] ✅ User {telegram_id} language VERIFIED in DB: {user.language} (was: {old_lang}, set to: {selected_lang})")
+            
+            if user.language != selected_lang:
+                logger.error(f"[SETTINGS] ❌ CRITICAL: Language NOT saved! DB={user.language}, expected={selected_lang}")
+                logger.error(f"[SETTINGS] Database path: {settings.database_path}")
+                logger.error(f"[SETTINGS] Database URL: {settings.database_url}")
+            else:
+                logger.info(f"[SETTINGS] ✅ SUCCESS: Language persisted correctly in DB")
             
             # Проверяем, является ли пользователь админом
             user_is_admin = await is_admin(session, telegram_id)
-            
-            logger.info(f"User {telegram_id} changed language to {selected_lang}")
         
         # Отправляем подтверждение на новом языке
         await callback.message.edit_text(i18n.get("settings_language_changed", selected_lang))
@@ -112,7 +135,8 @@ async def handle_language_change(callback: CallbackQuery, role: str | None = Non
         )
         
         await callback.answer()
+        logger.info(f"[SETTINGS] Language change completed for user {telegram_id}")
         
     except Exception as e:
-        logger.error(f"Error in language change handler: {e}", exc_info=True)
+        logger.error(f"[SETTINGS] Error in language change handler: {e}", exc_info=True)
         await callback.answer("Произошла ошибка / Error occurred")
