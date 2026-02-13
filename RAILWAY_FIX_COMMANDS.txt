@@ -1,0 +1,137 @@
+═══════════════════════════════════════════════════════════════
+🔧 КОМАНДЫ ДЛЯ ИСПРАВЛЕНИЯ RAILWAY БД И ЯЗЫКА
+═══════════════════════════════════════════════════════════════
+
+✅ ИСПРАВЛЕНО:
+   1. БД теперь сохраняется в /app/persist (Railway persistent volume)
+   2. Добавлено подробное логирование языка и регистрации
+   3. state.clear() вызывается после регистрации
+   4. Middleware логирует поиск пользователя в БД
+
+═══════════════════════════════════════════════════════════════
+📋 КОМАНДЫ (копируйте и выполняйте в PowerShell)
+═══════════════════════════════════════════════════════════════
+
+# 1️⃣ Проверьте изменения
+git status
+
+# 2️⃣ Добавьте все измененные файлы
+git add app/core/config.py app/bot/handlers/start.py app/bot/middlewares/role.py app/bot/middlewares/i18n.py RAILWAY_DB_FIX.md
+
+# 3️⃣ Создайте коммит
+git commit -m "Fix: Database persistence and language saving on Railway
+
+Critical fixes for Railway deployment:
+
+Database:
+- Use DATABASE_PATH env var (defaults to /app/persist on Railway)
+- Auto-create database directory
+- Log database path on startup
+
+Language saving:
+- Add [LANGUAGE] logs after language selection
+- Add [INVITE] logs after invite code validation
+- Add [DEPT] logs after department selection
+- Ensure state.clear() called after registration complete
+
+Middleware improvements:
+- Add [MIDDLEWARE] logs for user lookup
+- Add [I18N] logs for language retrieval
+- Add user_exists flag to middleware data
+
+Railway logs will now clearly show:
+- Database path: /app/persist/uqsoft.db
+- User registration flow with language
+- FSM state clearing
+- User lookup results from DB"
+
+# 4️⃣ Push на GitHub (Railway автоматически задеплоит)
+git push origin main
+
+═══════════════════════════════════════════════════════════════
+🚀 ПОСЛЕ ДЕПЛОЯ НА RAILWAY
+═══════════════════════════════════════════════════════════════
+
+1. Откройте Railway Dashboard → Your Project → Logs
+
+2. Проверьте логи при старте:
+   ✅ [CONFIG] Database path: /app/persist/uqsoft.db
+   ✅ [INIT_DB] Main admin added successfully
+   ✅ [RAG] Creating department-based vector indices...
+
+3. Протестируйте бота:
+   - Отправьте /start
+   - Выберите язык
+   - Проверьте логи:
+     ✅ [LANGUAGE] User X selected language: ru
+     ✅ [LANGUAGE] ✅ Admin user created with language=ru
+     ✅ [LANGUAGE] FSM cleared for user X
+
+4. Отправьте /start ещё раз:
+   - НЕ должен показывать выбор языка
+   - Проверьте логи:
+     ✅ [MIDDLEWARE] User X found in DB: role=admin, lang=ru
+     ✅ [I18N] User X language from DB: ru
+     ✅ Existing user: X (Name)
+
+═══════════════════════════════════════════════════════════════
+⚙️ НАСТРОЙКА RAILWAY (если БД все еще теряется)
+═══════════════════════════════════════════════════════════════
+
+1. Railway Dashboard → Your Project → Settings → Volumes
+
+2. Добавьте Volume:
+   Mount Path: /app/persist
+   Size: 1 GB (достаточно)
+
+3. Variables → Add Variable:
+   Name: DATABASE_PATH
+   Value: /app/persist/uqsoft.db
+
+4. Redeploy
+
+═══════════════════════════════════════════════════════════════
+🔍 ДИАГНОСТИКА ПРОБЛЕМ
+═══════════════════════════════════════════════════════════════
+
+Проблема: Язык не сохраняется
+→ Grep логи: railway logs | grep "LANGUAGE"
+→ Должно быть: "✅ Admin user created with language=ru"
+
+Проблема: БД теряется при рестарте
+→ Grep логи: railway logs | grep "CONFIG"
+→ Должно быть: "Database path: /app/persist/uqsoft.db"
+→ Если видите "./data/uqsoft.db" → добавьте Volume в Railway
+
+Проблема: Middleware не находит пользователя
+→ Grep логи: railway logs | grep "MIDDLEWARE"
+→ Должно быть: "User X found in DB: role=admin"
+→ Если видите "User X NOT found" → БД не сохранилась
+
+═══════════════════════════════════════════════════════════════
+✅ КРАТКАЯ ВЕРСИЯ (одной командой):
+═══════════════════════════════════════════════════════════════
+
+git add app/core/config.py app/bot/handlers/start.py app/bot/middlewares/role.py app/bot/middlewares/i18n.py RAILWAY_DB_FIX.md && git commit -m "Fix: Database persistence and language saving on Railway" && git push origin main
+
+═══════════════════════════════════════════════════════════════
+📊 ОЖИДАЕМЫЕ ЛОГИ ПОСЛЕ ФИКСА
+═══════════════════════════════════════════════════════════════
+
+При старте:
+[CONFIG] Database path: /app/persist/uqsoft.db
+[CONFIG] Database URL: sqlite+aiosqlite:////app/persist/uqsoft.db
+
+При регистрации:
+[LANGUAGE] User 123 selected language: ru
+[LANGUAGE] ✅ Admin user created: 123 with language=ru, saved to DB
+[LANGUAGE] User object: id=1, telegram_id=123, language=ru
+[LANGUAGE] FSM cleared for user 123
+
+При следующем /start:
+[MIDDLEWARE] User 123 found in DB: role=admin, lang=ru
+[I18N] User 123 language from DB: ru
+Existing user: 123 (Name)
+Sent welcome message to user 123 with role admin and lang ru
+
+═══════════════════════════════════════════════════════════════

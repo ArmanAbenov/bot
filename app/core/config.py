@@ -1,4 +1,5 @@
 """Конфигурация приложения."""
+import os
 from pathlib import Path
 from typing import List
 
@@ -18,10 +19,25 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
     # OpenAI API key оставлен для обратной совместимости (если используется в других местах)
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
-    database_url: str = Field(
-        default="sqlite+aiosqlite:///./data/uqsoft.db",
-        alias="DATABASE_URL",
+    
+    # Путь к БД для Railway - используем /app/persist если доступен, иначе ./data
+    database_path: str = Field(
+        default_factory=lambda: os.getenv(
+            "DATABASE_PATH",
+            "/app/persist/uqsoft.db" if os.path.exists("/app/persist") else "./data/uqsoft.db"
+        ),
+        alias="DATABASE_PATH",
     )
+    
+    @property
+    def database_url(self) -> str:
+        """Формирует DATABASE_URL для SQLAlchemy из database_path."""
+        # Создаем директорию для БД если её нет
+        db_dir = os.path.dirname(self.database_path)
+        os.makedirs(db_dir, exist_ok=True)
+        
+        return f"sqlite+aiosqlite:///{self.database_path}"
+    
     # ID администраторов (можно указать через переменную окружения или использовать дефолтные)
     # Формат: "375693711,123456789" или просто одно число
     # Используем str для избежания автоматического JSON парсинга
@@ -58,3 +74,8 @@ class Settings(BaseSettings):
 
 # Глобальный экземпляр настроек
 settings = Settings()
+
+# Логируем путь к БД при инициализации
+from app.utils.logger import logger
+logger.info(f"[CONFIG] Database path: {settings.database_path}")
+logger.info(f"[CONFIG] Database URL: {settings.database_url}")

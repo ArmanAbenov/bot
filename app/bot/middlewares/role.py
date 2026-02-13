@@ -28,6 +28,7 @@ class RoleMiddleware(BaseMiddleware):
 
         # Если ID есть, получаем роль из БД
         role = None
+        user_exists = False
         if user_id:
             try:
                 async with AsyncSessionLocal() as session:
@@ -37,13 +38,20 @@ class RoleMiddleware(BaseMiddleware):
                     
                     if user:
                         role = user.role
+                        user_exists = True
+                        from app.utils.logger import logger
+                        logger.debug(f"[MIDDLEWARE] User {user_id} found in DB: role={role}, lang={user.language}")
+                    else:
+                        from app.utils.logger import logger
+                        logger.debug(f"[MIDDLEWARE] User {user_id} NOT found in DB - new user")
             except Exception as e:
                 # В случае ошибки продолжаем без роли
                 from app.utils.logger import logger
-                logger.error(f"Error getting user role in middleware: {e}")
+                logger.error(f"[MIDDLEWARE] Error getting user role: {e}")
 
         # Добавляем роль в data для использования в хендлерах
         data["role"] = role
         data["user_id"] = user_id
+        data["user_exists"] = user_exists
 
         return await handler(event, data)

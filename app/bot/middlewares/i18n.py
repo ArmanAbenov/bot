@@ -81,11 +81,12 @@ class I18nMiddleware(BaseMiddleware):
                 
                 # Если пользователь не найден или язык не задан, используем дефолтный
                 if language is None:
-                    logger.debug(f"User {user_id} not found or language not set, using default: ru")
+                    logger.info(f"[I18N] User {user_id} not found in DB or language not set, using default: ru")
                     return "ru"
                 
+                logger.debug(f"[I18N] User {user_id} language from DB: {language}")
                 return language
                 
         except Exception as e:
-            logger.error(f"Error getting user language for user_id={user_id}: {e}", exc_info=True)
+            logger.error(f"[I18N] Error getting user language for user_id={user_id}: {e}", exc_info=True)
             return "ru"

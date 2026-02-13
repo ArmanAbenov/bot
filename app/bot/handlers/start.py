@@ -302,7 +302,7 @@ async def handle_language_selection(callback: CallbackQuery, state: FSMContext) 
         full_name = data.get("full_name")
         is_admin = data.get("is_admin", False)
         
-        logger.info(f"User {telegram_id} selected language: {selected_lang}")
+        logger.info(f"[LANGUAGE] User {telegram_id} selected language: {selected_lang}")
         
         # Инициализируем i18n для использования
         from app.core.i18n import i18n
@@ -320,7 +320,9 @@ async def handle_language_selection(callback: CallbackQuery, state: FSMContext) 
                 session.add(user)
                 await session.commit()
                 await session.refresh(user)
-                logger.info(f"New admin user created: {telegram_id} with language {selected_lang}")
+                
+                logger.info(f"[LANGUAGE] ✅ Admin user created: {telegram_id} with language={selected_lang}, saved to DB")
+                logger.info(f"[LANGUAGE] User object: id={user.id}, telegram_id={user.telegram_id}, language={user.language}")
                 
                 # Отправляем приветствие на выбранном языке
                 role_display = i18n.get("role_admin", selected_lang)
@@ -334,6 +336,7 @@ async def handle_language_selection(callback: CallbackQuery, state: FSMContext) 
                 
                 # Очищаем FSM
                 await state.clear()
+                logger.info(f"[LANGUAGE] FSM cleared for user {telegram_id}")
                 await callback.answer()
             else:
                 # Обычный пользователь - сохраняем язык и запрашиваем инвайт-код
@@ -341,10 +344,10 @@ async def handle_language_selection(callback: CallbackQuery, state: FSMContext) 
                 await callback.message.edit_text(i18n.get("registration_invite_code", selected_lang))
                 await callback.answer()
                 
-                logger.info(f"User {telegram_id} - waiting for invite code")
+                logger.info(f"[LANGUAGE] User {telegram_id} - waiting for invite code (language={selected_lang})")
                 
     except Exception as e:
-        logger.error(f"Error in language selection handler: {e}", exc_info=True)
+        logger.error(f"[LANGUAGE] Error in language selection handler: {e}", exc_info=True)
         await callback.answer("Произошла ошибка / Error occurred")
 
 
@@ -366,11 +369,13 @@ async def handle_invite_code_after_language(
         selected_lang = data.get("selected_language", "ru")
         
         invite_code = message.text.strip()
+        
+        logger.info(f"[INVITE] User {telegram_id} entered invite code: {invite_code}")
 
         # Проверяем инвайт-код
         if invite_code != settings.invite_code:
             await message.answer(i18n.get("registration_wrong_invite", selected_lang))
-            logger.info(f"User {telegram_id} entered wrong invite code: {invite_code}")
+            logger.info(f"[INVITE] ❌ Wrong invite code for user {telegram_id}: '{invite_code}' (expected: '{settings.invite_code}')")
             return
 
         # Создаем нового пользователя с ролью employee и выбранным языком
@@ -386,9 +391,8 @@ async def handle_invite_code_after_language(
             await session.commit()
             await session.refresh(user)
 
-            logger.info(
-                f"New user registered with invite code: {telegram_id} ({full_name}) with language {selected_lang}"
-            )
+            logger.info(f"[INVITE] ✅ New user registered: {telegram_id} ({full_name}) with language={selected_lang}")
+            logger.info(f"[INVITE] User saved to DB: id={user.id}, telegram_id={user.telegram_id}, language={user.language}, role={user.role}")
 
             # Переводим в состояние выбора отдела
             await state.set_state(RegistrationState.waiting_for_department)
@@ -399,10 +403,10 @@ async def handle_invite_code_after_language(
                 i18n.get("registration_choose_department", selected_lang),
                 reply_markup=get_department_selection_keyboard(context="registration")
             )
-            logger.info(f"User {telegram_id} moved to department selection")
+            logger.info(f"[INVITE] User {telegram_id} moved to department selection")
 
     except Exception as e:
-        logger.error(f"Error in invite code handler: {e}", exc_info=True)
+        logger.error(f"[INVITE] Error in invite code handler: {e}", exc_info=True)
         await message.answer("Произошла ошибка при обработке инвайт-кода.")
 
 
@@ -444,7 +448,7 @@ async def handle_department_selection(callback: CallbackQuery, state: FSMContext
         fsm_data = await state.get_data()
         lang = fsm_data.get("language", "ru")
         
-        logger.info(f"[DEPT] User {user_id} callback: {data}")
+        logger.info(f"[DEPT] User {user_id} callback: {data}, lang={lang}")
         
         # Показываем sub-menu для доставки
         if data == "dept_registration_delivery_menu":
@@ -481,6 +485,9 @@ async def handle_department_selection(callback: CallbackQuery, state: FSMContext
             if success:
                 display_name = get_department_display_name(department_code)
                 
+                logger.info(f"[DEPT] ✅ User {user_id} registered to department: {department_code}")
+                logger.info(f"[DEPT] User language: {lang}, clearing FSM state")
+                
                 # Удаляем клавиатуру и отправляем welcome message
                 await callback.message.edit_text(
                     i18n.get("registration_completed", lang, department=display_name)
@@ -492,12 +499,13 @@ async def handle_department_selection(callback: CallbackQuery, state: FSMContext
                     reply_markup=get_main_menu(role="employee", lang=lang)
                 )
                 
-                # Очищаем FSM
+                # Очищаем FSM - КРИТИЧНО для завершения регистрации
                 await state.clear()
+                logger.info(f"[DEPT] FSM state cleared for user {user_id} - registration complete")
                 
-                logger.info(f"[DEPT] User {user_id} registered to department: {department_code}")
                 await callback.answer(i18n.get("registration_completed", lang, department=display_name)[:64])
             else:
+                logger.error(f"[DEPT] ❌ Failed to save department for user {user_id}")
                 await callback.answer(i18n.get("error_saving_department", lang))
                 
     except Exception as e:
