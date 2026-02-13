@@ -789,9 +789,31 @@ class GeminiService:
                     
                     # Обычный режим для пользователей отделов
                     elif user_department and user_department in GeminiService._vector_stores:
+                        # Пользователь с конкретным отделом ищет в своем отделе + common
+                        search_results = []
+                        
+                        # 1. Поиск в своем отделе (приоритет)
                         vector_store = GeminiService._vector_stores[user_department]
                         logger.info(f"[RAG] User {user_id} (Dept: {user_department}) searching in department index...")
-                        search_results = vector_store.search(query_embedding, top_k=3)
+                        dept_results = vector_store.search(query_embedding, top_k=2)
+                        search_results.extend(dept_results)
+                        
+                        # 2. Поиск в common (если он существует и это не сам common)
+                        if user_department != "common" and "common" in GeminiService._vector_stores:
+                            common_store = GeminiService._vector_stores["common"]
+                            logger.info(f"[RAG] Also searching in 'common' for user {user_id}...")
+                            common_results = common_store.search(query_embedding, top_k=2)
+                            # Добавляем метаданные чтобы знать что из common
+                            for chunk, distance, metadata in common_results:
+                                enhanced_metadata = metadata.copy() if metadata else {}
+                                enhanced_metadata['department'] = 'common'
+                                search_results.append((chunk, distance, enhanced_metadata))
+                        
+                        # Сортируем по relevance (distance)
+                        search_results.sort(key=lambda x: x[1])
+                        search_results = search_results[:3]  # Топ-3 из обоих источников
+                        
+                        logger.info(f"[RAG] Found {len(search_results)} chunks (from {user_department} + common)")
                     
                     else:
                         logger.warning(f"[RAG] Department {user_department} not found in indices, using fallback")

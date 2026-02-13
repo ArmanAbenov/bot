@@ -36,6 +36,7 @@ class UserStatus(str, Enum):
 class Department(str, Enum):
     """Отделы компании для multitenancy."""
 
+    COMMON = "common"  # Общий доступ (по умолчанию для новых пользователей)
     COURIER = "delivery/courier"
     FRANCHISE = "delivery/franchise"
     SORTING = "sorting"
@@ -46,11 +47,23 @@ class Department(str, Enum):
     def get_display_names(cls) -> dict[str, str]:
         """Возвращает человекочитаемые названия отделов."""
         return {
+            cls.COMMON: "Общий доступ",
             cls.COURIER: "Курьер",
             cls.FRANCHISE: "Франчайзи",
             cls.SORTING: "Сортировочный центр",
             cls.CUSTOMER_SERVICE: "Клиентский сервис",
             cls.MANAGER: "Менеджер",
+        }
+    
+    @classmethod
+    def get_admin_assignable_departments(cls) -> dict[str, str]:
+        """Возвращает отделы, которые админ может назначать (без COMMON)."""
+        return {
+            cls.SORTING: "Сортировочный центр",
+            cls.MANAGER: "Менеджер",
+            cls.COURIER: "Курьер",
+            cls.FRANCHISE: "Франчайзи",
+            cls.CUSTOMER_SERVICE: "Клиентский сервис",
         }
     
     @classmethod

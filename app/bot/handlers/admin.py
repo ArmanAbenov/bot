@@ -13,6 +13,13 @@ from app.core.database import AsyncSessionLocal
 from app.core.models import Department
 from app.services.ai_service import GeminiService
 from app.services.admin_service import add_admin, get_all_admins, is_admin
+from app.services.employee_service import (
+    get_all_employees,
+    get_employee_by_telegram_id,
+    assign_department_to_employee,
+    hash_user_id,
+    format_user_info,
+)
 from app.utils.filters import IsAdmin
 from app.utils.logger import logger
 from app.utils.states import AdminState
@@ -65,6 +72,7 @@ def get_admin_menu(lang: str = "ru") -> ReplyKeyboardMarkup:
             [KeyboardButton(text=i18n.get("admin_add_knowledge", lang))],
             [KeyboardButton(text=i18n.get("admin_add_file", lang))],
             [KeyboardButton(text=i18n.get("admin_manage_knowledge", lang))],
+            [KeyboardButton(text=i18n.get("admin_manage_employees", lang))],
             [KeyboardButton(text=i18n.get("admin_manage_admins", lang))],
             [KeyboardButton(text=i18n.get("admin_invite_code", lang))],
             [KeyboardButton(text=i18n.get("main_menu_back", lang))],
@@ -1300,4 +1308,303 @@ async def handle_kb_delete_callback(callback: CallbackQuery, lang: str = "ru") -
         
     except Exception as e:
         logger.error(f"Error in kb_delete callback handler: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка.", show_alert=True)
+
+
+# ===================================================================================
+# Управление сотрудниками (Employee Management)
+# ===================================================================================
+
+@router.message(lambda message: message.text in [
+    "👥 Сотрудники",
+    "👥 Қызметкерлер",
+    "👥 Employees",
+    "👥 员工"
+])
+async def handle_manage_employees(message: Message, lang: str = "ru") -> None:
+    """Показывает список всех зарегистрированных сотрудников."""
+    try:
+        if not await check_admin_access(message.from_user.id):
+            await message.answer(
+                i18n.get("admin_no_access", lang),
+                reply_markup=get_main_menu(role=None, is_admin=False, lang=lang)
+            )
+            return
+        
+        from app.core.i18n import i18n
+        
+        async with AsyncSessionLocal() as session:
+            employees = await get_all_employees(session)
+            
+            if not employees:
+                await message.answer(
+                    i18n.get("employees_list_empty", lang),
+                    reply_markup=get_admin_menu(lang)
+                )
+                return
+            
+            # Создаем inline-кнопки для каждого сотрудника
+            buttons: list[list[InlineKeyboardButton]] = []
+            
+            for user in employees:
+                # Используем хеш для callback_data (избегаем BUTTON_DATA_INVALID)
+                user_hash = hash_user_id(user.telegram_id)
+                
+                # Формируем текст кнопки
+                dept_names = Department.get_display_names()
+                dept_display = dept_names.get(user.department, user.department or "Не назначен")
+                button_text = f"{user.full_name or 'Без имени'} ({dept_display[:15]})"
+                
+                buttons.append([
+                    InlineKeyboardButton(
+                        text=button_text,
+                        callback_data=f"emp_view:{user.telegram_id}"
+                    )
+                ])
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+            
+            text = f"{i18n.get('employees_list_header', lang)}\n\n"
+            text += f"Всего зарегистрировано: {len(employees)}"
+            
+            await message.answer(text, reply_markup=keyboard)
+            
+            logger.info(f"Admin {message.from_user.id} viewed employee list ({len(employees)} users)")
+            
+    except Exception as e:
+        logger.error(f"Error in manage_employees handler: {e}", exc_info=True)
+        await message.answer(
+            i18n.get("admin_error", lang),
+            reply_markup=get_admin_menu(lang)
+        )
+
+
+@router.callback_query(F.data.startswith("emp_view:"))
+async def handle_employee_view_callback(callback: CallbackQuery, lang: str = "ru") -> None:
+    """Показывает детальную информацию о сотруднике."""
+    try:
+        if not await check_admin_access(callback.from_user.id):
+            await callback.answer(i18n.get("admin_no_access_short", lang), show_alert=True)
+            return
+        
+        from app.core.i18n import i18n
+        
+        # Извлекаем telegram_id из callback_data
+        telegram_id = int(callback.data.replace("emp_view:", ""))
+        
+        async with AsyncSessionLocal() as session:
+            user = await get_employee_by_telegram_id(session, telegram_id)
+            
+            if not user:
+                await callback.answer("Пользователь не найден.", show_alert=True)
+                return
+            
+            # Форматируем информацию о пользователе
+            user_info_text = format_user_info(user, lang)
+            
+            # Создаем кнопки управления
+            buttons = [
+                [InlineKeyboardButton(
+                    text=i18n.get("employee_change_department", lang),
+                    callback_data=f"emp_assign:{telegram_id}"
+                )],
+                [InlineKeyboardButton(
+                    text=i18n.get("employee_back_to_list", lang),
+                    callback_data="emp_list"
+                )]
+            ]
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+            
+            await callback.message.edit_text(user_info_text, reply_markup=keyboard)
+            await callback.answer()
+            
+            logger.info(f"Admin {callback.from_user.id} viewed employee {telegram_id} details")
+            
+    except Exception as e:
+        logger.error(f"Error in employee_view callback: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка.", show_alert=True)
+
+
+@router.callback_query(F.data == "emp_list")
+async def handle_employee_list_callback(callback: CallbackQuery, lang: str = "ru") -> None:
+    """Возвращает к списку сотрудников."""
+    try:
+        if not await check_admin_access(callback.from_user.id):
+            await callback.answer(i18n.get("admin_no_access_short", lang), show_alert=True)
+            return
+        
+        from app.core.i18n import i18n
+        
+        async with AsyncSessionLocal() as session:
+            employees = await get_all_employees(session)
+            
+            if not employees:
+                await callback.message.edit_text(i18n.get("employees_list_empty", lang))
+                await callback.answer()
+                return
+            
+            # Создаем inline-кнопки для каждого сотрудника
+            buttons: list[list[InlineKeyboardButton]] = []
+            
+            for user in employees:
+                dept_names = Department.get_display_names()
+                dept_display = dept_names.get(user.department, user.department or "Не назначен")
+                button_text = f"{user.full_name or 'Без имени'} ({dept_display[:15]})"
+                
+                buttons.append([
+                    InlineKeyboardButton(
+                        text=button_text,
+                        callback_data=f"emp_view:{user.telegram_id}"
+                    )
+                ])
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+            
+            text = f"{i18n.get('employees_list_header', lang)}\n\n"
+            text += f"Всего зарегистрировано: {len(employees)}"
+            
+            await callback.message.edit_text(text, reply_markup=keyboard)
+            await callback.answer()
+            
+    except Exception as e:
+        logger.error(f"Error in employee_list callback: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("emp_assign:"))
+async def handle_employee_assign_callback(callback: CallbackQuery, lang: str = "ru") -> None:
+    """Показывает список отделов для назначения."""
+    try:
+        if not await check_admin_access(callback.from_user.id):
+            await callback.answer(i18n.get("admin_no_access_short", lang), show_alert=True)
+            return
+        
+        from app.core.i18n import i18n
+        
+        # Извлекаем telegram_id из callback_data
+        telegram_id = int(callback.data.replace("emp_assign:", ""))
+        
+        async with AsyncSessionLocal() as session:
+            user = await get_employee_by_telegram_id(session, telegram_id)
+            
+            if not user:
+                await callback.answer("Пользователь не найден.", show_alert=True)
+                return
+            
+            # Получаем список отделов (без COMMON - его нельзя назначить вручную)
+            assignable_depts = Department.get_admin_assignable_departments()
+            
+            # Создаем кнопки для каждого отдела
+            buttons: list[list[InlineKeyboardButton]] = []
+            
+            for dept_code, dept_name in assignable_depts.items():
+                buttons.append([
+                    InlineKeyboardButton(
+                        text=dept_name,
+                        callback_data=f"emp_set:{telegram_id}:{dept_code}"
+                    )
+                ])
+            
+            # Кнопка "Назад"
+            buttons.append([
+                InlineKeyboardButton(
+                    text=i18n.get("button_back", lang),
+                    callback_data=f"emp_view:{telegram_id}"
+                )
+            ])
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+            
+            text = i18n.get("employee_select_department", lang, name=user.full_name or "пользователю")
+            
+            await callback.message.edit_text(text, reply_markup=keyboard)
+            await callback.answer()
+            
+            logger.info(f"Admin {callback.from_user.id} selecting department for employee {telegram_id}")
+            
+    except Exception as e:
+        logger.error(f"Error in employee_assign callback: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("emp_set:"))
+async def handle_employee_set_department_callback(callback: CallbackQuery, lang: str = "ru") -> None:
+    """Назначает отдел сотруднику и отправляет уведомление."""
+    try:
+        if not await check_admin_access(callback.from_user.id):
+            await callback.answer(i18n.get("admin_no_access_short", lang), show_alert=True)
+            return
+        
+        from app.core.i18n import i18n
+        
+        # Парсим callback_data: emp_set:{telegram_id}:{department}
+        parts = callback.data.split(":")
+        telegram_id = int(parts[1])
+        department_code = parts[2]
+        
+        # Статус обновления
+        await callback.message.edit_text("⏳ Назначаем отдел...")
+        
+        async with AsyncSessionLocal() as session:
+            # Получаем пользователя для уведомления
+            user = await get_employee_by_telegram_id(session, telegram_id)
+            
+            if not user:
+                await callback.answer("Пользователь не найден.", show_alert=True)
+                return
+            
+            user_lang = user.language or "ru"
+            
+            # Назначаем отдел
+            success = await assign_department_to_employee(session, telegram_id, department_code)
+            
+            if success:
+                # Получаем название отдела
+                dept_names = Department.get_display_names()
+                department_name = dept_names.get(department_code, department_code)
+                
+                # Отправляем уведомление пользователю
+                try:
+                    bot = callback.bot
+                    notification_text = (
+                        f"{i18n.get('employee_notification_title', user_lang)}\n\n"
+                        f"{i18n.get('employee_notification_assigned', user_lang, department=department_name)}"
+                    )
+                    await bot.send_message(telegram_id, notification_text)
+                    logger.info(f"Notification sent to user {telegram_id} about department assignment")
+                except Exception as notify_error:
+                    logger.warning(f"Failed to send notification to {telegram_id}: {notify_error}")
+                
+                # Показываем информацию о пользователе с обновленным отделом
+                await session.refresh(user)  # Обновляем данные
+                user_info_text = format_user_info(user, lang)
+                user_info_text += f"\n\n{i18n.get('employee_department_assigned', lang)}"
+                
+                buttons = [
+                    [InlineKeyboardButton(
+                        text=i18n.get("employee_change_department", lang),
+                        callback_data=f"emp_assign:{telegram_id}"
+                    )],
+                    [InlineKeyboardButton(
+                        text=i18n.get("employee_back_to_list", lang),
+                        callback_data="emp_list"
+                    )]
+                ]
+                
+                keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+                
+                await callback.message.edit_text(user_info_text, reply_markup=keyboard)
+                await callback.answer(f"✅ Отдел '{department_name}' назначен", show_alert=False)
+                
+                logger.info(
+                    f"Admin {callback.from_user.id} assigned department '{department_code}' "
+                    f"to employee {telegram_id}"
+                )
+            else:
+                await callback.message.edit_text(i18n.get("employee_department_error", lang))
+                await callback.answer("Ошибка при назначении отдела.", show_alert=True)
+                
+    except Exception as e:
+        logger.error(f"Error in employee_set_department callback: {e}", exc_info=True)
         await callback.answer("Произошла ошибка.", show_alert=True)

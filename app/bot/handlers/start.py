@@ -49,12 +49,12 @@ async def cmd_start(message: Message, state: FSMContext, role: str | None = None
                 # Новый пользователь - СОЗДАЕМ В БД СРАЗУ с временными данными
                 logger.info(f"[START] New user {telegram_id} - creating in DB immediately")
                 
-                # Создаем пользователя с language=None (будет обновлен после выбора)
+                # Создаем пользователя с department="common" (общий доступ) и language=None
                 user = User(
                     telegram_id=telegram_id,
                     full_name=full_name,
                     role="admin" if user_is_admin else "employee",
-                    department=None,  # Будет выбран позже
+                    department=None if user_is_admin else "common",  # Админ без отдела (God Mode), сотрудник - common
                     language=None,  # Будет выбран в следующем шаге
                 )
                 session.add(user)
