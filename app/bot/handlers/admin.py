@@ -4,7 +4,7 @@ from pathlib import Path
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup
+from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup
 from sqlalchemy import select
 
 from app.bot.keyboards.main_menu import get_main_menu
@@ -1507,6 +1507,10 @@ async def handle_kb_file_callback(callback: CallbackQuery, lang: str = "ru") -> 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(
+                    text="📥 Скачать",
+                    callback_data=f"kb_download:{dept_name}:{filename}"
+                )],
+                [InlineKeyboardButton(
                     text=i18n.get("kb_delete_button", lang),
                     callback_data=f"kb_del:{dept_name}:{filename}"
                 )],
@@ -1527,6 +1531,80 @@ async def handle_kb_file_callback(callback: CallbackQuery, lang: str = "ru") -> 
     except Exception as e:
         logger.error(f"Error in kb_file callback handler: {e}", exc_info=True)
         await callback.answer("Произошла ошибка.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("kb_download:"))
+async def handle_kb_download_callback(callback: CallbackQuery, lang: str = "ru") -> None:
+    """Отправляет файл из базы знаний администратору."""
+    try:
+        # Проверяем доступ (только админы)
+        if not await check_admin_access(callback.from_user.id):
+            await callback.answer("❌ У вас нет доступа к скачиванию файлов.", show_alert=True)
+            return
+        
+        from app.core.i18n import i18n
+        
+        # Парсим callback_data: kb_download:dept_name:filename
+        parts = callback.data.split(":", 2)
+        if len(parts) != 3:
+            await callback.answer("Ошибка в формате данных.", show_alert=True)
+            return
+        
+        dept_name = parts[1]
+        filename = parts[2]
+        
+        logger.info(f"Admin {callback.from_user.id} downloading file: {dept_name}/{filename}")
+        
+        # Формируем путь к файлу
+        knowledge_path = Path("data/knowledge")
+        file_path = knowledge_path / dept_name / filename
+        
+        # Проверяем существование файла
+        if not file_path.exists() or not file_path.is_file():
+            logger.error(f"File not found on disk: {file_path}")
+            await callback.answer("❌ Ошибка: файл не найден на сервере.", show_alert=True)
+            return
+        
+        # Проверяем что файл действительно в knowledge директории (защита от path traversal)
+        try:
+            file_path_resolved = file_path.resolve()
+            knowledge_path_resolved = knowledge_path.resolve()
+            if not str(file_path_resolved).startswith(str(knowledge_path_resolved)):
+                logger.error(f"Security: Path traversal attempt blocked: {file_path}")
+                await callback.answer("❌ Ошибка: недопустимый путь к файлу.", show_alert=True)
+                return
+        except Exception as path_error:
+            logger.error(f"Error resolving path: {path_error}", exc_info=True)
+            await callback.answer("❌ Ошибка при проверке пути к файлу.", show_alert=True)
+            return
+        
+        # Отправляем статус
+        await callback.answer("⏳ Подготавливаю файл...")
+        
+        try:
+            # Создаем FSInputFile для отправки
+            document = FSInputFile(file_path)
+            
+            # Отправляем файл пользователю
+            await callback.message.answer_document(
+                document=document,
+                caption=f"📄 Файл из базы знаний\n\n"
+                        f"📂 Отдел: {dept_name}\n"
+                        f"📝 Имя файла: {filename}"
+            )
+            
+            logger.info(f"Admin {callback.from_user.id} successfully downloaded file: {dept_name}/{filename}")
+            
+            # Подтверждение
+            await callback.answer("✅ Файл отправлен", show_alert=False)
+            
+        except Exception as send_error:
+            logger.error(f"Error sending file {file_path}: {send_error}", exc_info=True)
+            await callback.answer(f"❌ Ошибка при отправке файла: {str(send_error)}", show_alert=True)
+        
+    except Exception as e:
+        logger.error(f"Error in kb_download callback handler: {e}", exc_info=True)
+        await callback.answer("❌ Произошла ошибка при скачивании.", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("kb_del:"))
