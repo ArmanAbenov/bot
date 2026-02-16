@@ -5,14 +5,15 @@ from aiogram import Bot, F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup
+from sqlalchemy import select
 
 from app.bot.keyboards.main_menu import get_main_menu
 from app.bot.keyboards.department import get_admin_department_keyboard, get_delivery_submenu_keyboard
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
-from app.core.models import Department
+from app.core.models import Admin, Department
 from app.services.ai_service import GeminiService
-from app.services.admin_service import add_admin, get_all_admins, is_admin
+from app.services.admin_service import add_admin, get_all_admins, is_admin, remove_admin
 from app.services.employee_service import (
     get_all_employees,
     get_employee_by_telegram_id,
@@ -860,7 +861,7 @@ async def cmd_reload_indices(message: Message) -> None:
     "👥 管理员"
 ])
 async def handle_admins_button(message: Message, role: str | None = None, lang: str = "ru") -> None:
-    """Показывает список администраторов и кнопку добавления."""
+    """Показывает список администраторов с кнопками управления."""
     try:
         # Проверяем доступ через БД
         async with AsyncSessionLocal() as session:
@@ -872,27 +873,64 @@ async def handle_admins_button(message: Message, role: str | None = None, lang: 
             # Получаем список всех админов
             admins = await get_all_admins(session)
         
+        # ID главного админа, которого нельзя удалить
+        MAIN_ADMIN_ID = 375693711
+        current_user_id = message.from_user.id
+        
         if not admins:
             text = "👥 Управление администраторами\n\n"
             text += "Список администраторов пуст."
+            buttons: list[list[InlineKeyboardButton]] = []
         else:
             text = "👥 Управление администраторами\n\n"
             text += f"Всего админов: {len(admins)}\n\n"
-            text += "Список администраторов:\n"
+            text += "Выберите администратора для управления:"
+            
+            # Создаем кнопки для каждого админа
+            buttons: list[list[InlineKeyboardButton]] = []
+            
             for admin in admins:
-                text += f"• ID: {admin.user_id} | Имя: {admin.username}\n"
+                # Определяем защищен ли админ от удаления
+                is_main_admin = admin.user_id == MAIN_ADMIN_ID
+                is_self = admin.user_id == current_user_id
+                
+                # Формируем текст кнопки
+                admin_label = f"{admin.username}"
+                if is_main_admin:
+                    admin_label += " 👑"
+                if is_self:
+                    admin_label += " (Вы)"
+                
+                # Если админ не защищен - добавляем кнопку удаления
+                if not is_main_admin and not is_self:
+                    buttons.append([
+                        InlineKeyboardButton(
+                            text=f"👤 {admin_label}",
+                            callback_data=f"admin_info:{admin.user_id}"
+                        ),
+                        InlineKeyboardButton(
+                            text="❌",
+                            callback_data=f"admin_remove:{admin.user_id}"
+                        )
+                    ])
+                else:
+                    # Только информационная кнопка (без удаления)
+                    buttons.append([
+                        InlineKeyboardButton(
+                            text=f"👤 {admin_label}",
+                            callback_data=f"admin_info:{admin.user_id}"
+                        )
+                    ])
         
-        # Создаем inline-клавиатуру с кнопкой добавления
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="➕ Добавить админа",
-                        callback_data="admin_add_new"
-                    )
-                ]
-            ]
-        )
+        # Кнопка добавления нового админа
+        buttons.append([
+            InlineKeyboardButton(
+                text="➕ Добавить админа",
+                callback_data="admin_add_new"
+            )
+        ])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
         
         await message.answer(text, reply_markup=keyboard)
         logger.info(f"Admin {message.from_user.id} opened admins management")
@@ -900,6 +938,245 @@ async def handle_admins_button(message: Message, role: str | None = None, lang: 
     except Exception as e:
         logger.error(f"Error in admins button handler: {e}", exc_info=True)
         await message.answer("Произошла ошибка при загрузке списка админов.", reply_markup=get_admin_menu(lang))
+
+
+@router.callback_query(F.data.startswith("admin_info:"))
+async def handle_admin_info_callback(callback: CallbackQuery, lang: str = "ru") -> None:
+    """Показывает информацию об администраторе."""
+    try:
+        # Проверяем доступ через БД
+        async with AsyncSessionLocal() as session:
+            user_is_admin = await is_admin(session, callback.from_user.id)
+            if not user_is_admin:
+                await callback.answer("У вас нет доступа.", show_alert=True)
+                return
+            
+            # Извлекаем user_id из callback_data
+            admin_user_id = int(callback.data.replace("admin_info:", ""))
+            
+            # Получаем информацию об админе
+            stmt = select(Admin).where(Admin.user_id == admin_user_id)
+            result = await session.execute(stmt)
+            admin = result.scalar_one_or_none()
+            
+            if not admin:
+                await callback.answer("Администратор не найден.", show_alert=True)
+                return
+            
+            # Формируем информацию
+            MAIN_ADMIN_ID = 375693711
+            is_main_admin = admin.user_id == MAIN_ADMIN_ID
+            is_self = admin.user_id == callback.from_user.id
+            
+            text = f"👤 Информация об администраторе\n\n"
+            text += f"ID: {admin.user_id}\n"
+            text += f"Имя: {admin.username}\n"
+            
+            if is_main_admin:
+                text += f"\n👑 Главный администратор\n"
+                text += f"Этот аккаунт защищен от удаления."
+            elif is_self:
+                text += f"\n🔒 Это ваш аккаунт\n"
+                text += f"Вы не можете удалить сами себя."
+            
+            # Создаем кнопки
+            buttons: list[list[InlineKeyboardButton]] = []
+            
+            # Кнопка удаления (если админ не защищен)
+            if not is_main_admin and not is_self:
+                buttons.append([
+                    InlineKeyboardButton(
+                        text="❌ Удалить администратора",
+                        callback_data=f"admin_remove:{admin_user_id}"
+                    )
+                ])
+            
+            # Кнопка возврата
+            buttons.append([
+                InlineKeyboardButton(
+                    text="◀️ Назад к списку",
+                    callback_data="admin_list"
+                )
+            ])
+            
+            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+            
+            await callback.message.edit_text(text, reply_markup=keyboard)
+            await callback.answer()
+            
+            logger.info(f"Admin {callback.from_user.id} viewed info for admin {admin_user_id}")
+            
+    except Exception as e:
+        logger.error(f"Error in admin_info callback: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("admin_remove:"))
+async def handle_admin_remove_callback(callback: CallbackQuery, lang: str = "ru") -> None:
+    """Удаляет администратора после подтверждения."""
+    try:
+        # Проверяем доступ через БД
+        async with AsyncSessionLocal() as session:
+            user_is_admin = await is_admin(session, callback.from_user.id)
+            if not user_is_admin:
+                await callback.answer("У вас нет доступа.", show_alert=True)
+                return
+            
+            # Извлекаем user_id из callback_data
+            admin_user_id = int(callback.data.replace("admin_remove:", ""))
+            
+            # Безопасность: проверяем защиту
+            MAIN_ADMIN_ID = 375693711
+            current_user_id = callback.from_user.id
+            
+            if admin_user_id == MAIN_ADMIN_ID:
+                await callback.answer("❌ Главного администратора нельзя удалить!", show_alert=True)
+                return
+            
+            if admin_user_id == current_user_id:
+                await callback.answer("❌ Вы не можете удалить сами себя!", show_alert=True)
+                return
+            
+            # Получаем информацию об админе перед удалением
+            stmt = select(Admin).where(Admin.user_id == admin_user_id)
+            result = await session.execute(stmt)
+            admin = result.scalar_one_or_none()
+            
+            if not admin:
+                await callback.answer("Администратор не найден.", show_alert=True)
+                return
+            
+            admin_username = admin.username
+            
+            # Удаляем админа
+            success = await remove_admin(session, admin_user_id)
+            
+            if success:
+                # Отправляем уведомление самому пользователю (опционально)
+                try:
+                    bot = callback.bot
+                    notification_text = (
+                        "⚠️ Уведомление\n\n"
+                        "Ваши права администратора были отозваны.\n"
+                        "Теперь у вас роль обычного сотрудника."
+                    )
+                    await bot.send_message(admin_user_id, notification_text)
+                    logger.info(f"Sent notification to user {admin_user_id} about admin rights removal")
+                except Exception as notify_error:
+                    logger.warning(f"Failed to send notification to {admin_user_id}: {notify_error}")
+                
+                # Обновляем список админов
+                admins = await get_all_admins(session)
+                
+                text = "✅ Права администратора успешно отозваны!\n\n"
+                text += f"👤 Пользователь: {admin_username} (ID: {admin_user_id})\n\n"
+                text += f"📊 Осталось администраторов: {len(admins)}"
+                
+                # Создаем кнопки
+                buttons = [
+                    [InlineKeyboardButton(
+                        text="◀️ Назад к списку",
+                        callback_data="admin_list"
+                    )]
+                ]
+                
+                keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+                
+                await callback.message.edit_text(text, reply_markup=keyboard)
+                await callback.answer(f"✅ Админ {admin_username} удален", show_alert=False)
+                
+                logger.info(
+                    f"Admin {callback.from_user.id} removed admin rights from user {admin_user_id} ({admin_username})"
+                )
+            else:
+                await callback.answer("❌ Ошибка при удалении администратора.", show_alert=True)
+                
+    except Exception as e:
+        logger.error(f"Error in admin_remove callback: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка.", show_alert=True)
+
+
+@router.callback_query(F.data == "admin_list")
+async def handle_admin_list_callback(callback: CallbackQuery, lang: str = "ru") -> None:
+    """Возвращает к списку администраторов."""
+    try:
+        # Проверяем доступ через БД
+        async with AsyncSessionLocal() as session:
+            user_is_admin = await is_admin(session, callback.from_user.id)
+            if not user_is_admin:
+                await callback.answer("У вас нет доступа.", show_alert=True)
+                return
+            
+            # Получаем список всех админов
+            admins = await get_all_admins(session)
+        
+        # ID главного админа, которого нельзя удалить
+        MAIN_ADMIN_ID = 375693711
+        current_user_id = callback.from_user.id
+        
+        if not admins:
+            text = "👥 Управление администраторами\n\n"
+            text += "Список администраторов пуст."
+            buttons: list[list[InlineKeyboardButton]] = []
+        else:
+            text = "👥 Управление администраторами\n\n"
+            text += f"Всего админов: {len(admins)}\n\n"
+            text += "Выберите администратора для управления:"
+            
+            # Создаем кнопки для каждого админа
+            buttons: list[list[InlineKeyboardButton]] = []
+            
+            for admin in admins:
+                # Определяем защищен ли админ от удаления
+                is_main_admin = admin.user_id == MAIN_ADMIN_ID
+                is_self = admin.user_id == current_user_id
+                
+                # Формируем текст кнопки
+                admin_label = f"{admin.username}"
+                if is_main_admin:
+                    admin_label += " 👑"
+                if is_self:
+                    admin_label += " (Вы)"
+                
+                # Если админ не защищен - добавляем кнопку удаления
+                if not is_main_admin and not is_self:
+                    buttons.append([
+                        InlineKeyboardButton(
+                            text=f"👤 {admin_label}",
+                            callback_data=f"admin_info:{admin.user_id}"
+                        ),
+                        InlineKeyboardButton(
+                            text="❌",
+                            callback_data=f"admin_remove:{admin.user_id}"
+                        )
+                    ])
+                else:
+                    # Только информационная кнопка (без удаления)
+                    buttons.append([
+                        InlineKeyboardButton(
+                            text=f"👤 {admin_label}",
+                            callback_data=f"admin_info:{admin.user_id}"
+                        )
+                    ])
+        
+        # Кнопка добавления нового админа
+        buttons.append([
+            InlineKeyboardButton(
+                text="➕ Добавить админа",
+                callback_data="admin_add_new"
+            )
+        ])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        
+        await callback.message.edit_text(text, reply_markup=keyboard)
+        await callback.answer()
+        
+        logger.info(f"Admin {callback.from_user.id} returned to admins list")
+        
+    except Exception as e:
+        logger.error(f"Error in admin_list callback: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка.", show_alert=True)
 
 
 @router.callback_query(F.data == "admin_add_new")

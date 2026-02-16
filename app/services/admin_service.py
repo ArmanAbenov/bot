@@ -91,3 +91,36 @@ async def get_all_admins(session: AsyncSession) -> List[Admin]:
     except Exception as e:
         logger.error(f"[ADMIN] Error retrieving admins: {e}", exc_info=True)
         return []
+
+
+async def remove_admin(session: AsyncSession, user_id: int) -> bool:
+    """
+    Удаляет администратора из базы данных.
+    
+    Args:
+        session: Сессия базы данных
+        user_id: Telegram ID пользователя
+    
+    Returns:
+        True если админ успешно удален, False если произошла ошибка
+    """
+    try:
+        # Ищем админа
+        stmt = select(Admin).where(Admin.user_id == user_id)
+        result = await session.execute(stmt)
+        admin = result.scalar_one_or_none()
+        
+        if not admin:
+            logger.warning(f"[ADMIN] Admin with user_id={user_id} not found")
+            return False
+        
+        # Удаляем админа
+        await session.delete(admin)
+        await session.commit()
+        
+        logger.info(f"[ADMIN] Removed admin user_id={user_id}, username={admin.username}")
+        return True
+    except Exception as e:
+        await session.rollback()
+        logger.error(f"[ADMIN] Error removing admin: {e}", exc_info=True)
+        return False
