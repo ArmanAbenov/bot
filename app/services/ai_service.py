@@ -220,8 +220,9 @@ class GeminiService:
             pdf_extensions = {".pdf"}
             docx_extensions = {".docx"}
             
-            # Получаем список всех отделов
-            departments = [dept.value for dept in Department]
+            # Получаем список всех отделов (нормализуем в нижний регистр)
+            departments = [dept.value.lower() for dept in Department]
+            logger.info(f"[RAG] Creating indices for departments: {departments}")
             
             # Сначала читаем common файлы (они будут добавлены во все индексы)
             common_path = knowledge_path / "common"
@@ -750,6 +751,9 @@ class GeminiService:
                     user_department = await get_user_department(session, user_id)
                     
                     logger.info(f"[RAG] User {user_id} department: {user_department or 'admin (all departments)'}")
+                    logger.info(f"[RAG] Available indices: {list(GeminiService._vector_stores.keys())}")
+                    if user_department:
+                        logger.info(f"[RAG] Searching in folder: {user_department}")
                     
                     # Проверяем, создан ли индекс
                     if not GeminiService._vector_stores:

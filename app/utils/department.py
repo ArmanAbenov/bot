@@ -15,7 +15,7 @@ async def get_user_department(session: AsyncSession, user_id: int) -> str | None
         user_id: Telegram ID пользователя
         
     Returns:
-        Название отдела или None если не установлен
+        Название отдела (нормализованное) или None если не установлен
     """
     try:
         stmt = select(User.department).where(User.telegram_id == user_id)
@@ -23,11 +23,21 @@ async def get_user_department(session: AsyncSession, user_id: int) -> str | None
         department = result.scalar_one_or_none()
         
         if department:
-            logger.info(f"[DEPT] User {user_id} belongs to department: {department}")
+            # Нормализация: убираем префикс "Department." если он есть
+            dept_key = str(department).lower()
+            if "department." in dept_key:
+                dept_key = dept_key.split(".")[-1]
+            
+            # Если department - это Enum объект, берем его значение
+            if hasattr(department, 'value'):
+                dept_key = department.value.lower()
+            
+            logger.info(f"[DEPT] User {user_id} belongs to department: {dept_key} (raw: {department})")
+            return dept_key
         else:
             logger.warning(f"[DEPT] User {user_id} has no department assigned")
+            return None
             
-        return department
     except Exception as e:
         logger.error(f"[DEPT] Error getting department for user {user_id}: {e}", exc_info=True)
         return None

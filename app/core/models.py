@@ -47,23 +47,23 @@ class Department(str, Enum):
     def get_display_names(cls) -> dict[str, str]:
         """Возвращает человекочитаемые названия отделов."""
         return {
-            cls.COMMON: "Общий доступ",
-            cls.COURIER: "Курьер",
-            cls.FRANCHISE: "Франчайзи",
-            cls.SORTING: "Сортировочный центр",
-            cls.CUSTOMER_SERVICE: "Клиентский сервис",
-            cls.MANAGER: "Менеджер",
+            cls.COMMON.value: "Общий доступ",
+            cls.COURIER.value: "Курьер",
+            cls.FRANCHISE.value: "Франчайзи",
+            cls.SORTING.value: "Сортировочный центр",
+            cls.CUSTOMER_SERVICE.value: "Клиентский сервис",
+            cls.MANAGER.value: "Менеджер",
         }
     
     @classmethod
     def get_admin_assignable_departments(cls) -> dict[str, str]:
         """Возвращает отделы, которые админ может назначать (без COMMON)."""
         return {
-            cls.SORTING: "Сортировочный центр",
-            cls.MANAGER: "Менеджер",
-            cls.COURIER: "Курьер",
-            cls.FRANCHISE: "Франчайзи",
-            cls.CUSTOMER_SERVICE: "Клиентский сервис",
+            cls.SORTING.value: "Сортировочный центр",
+            cls.MANAGER.value: "Менеджер",
+            cls.COURIER.value: "Курьер",
+            cls.FRANCHISE.value: "Франчайзи",
+            cls.CUSTOMER_SERVICE.value: "Клиентский сервис",
         }
     
     @classmethod
