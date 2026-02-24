@@ -46,45 +46,115 @@ async def cmd_start(message: Message, state: FSMContext, role: str | None = None
             user = result.scalar_one_or_none()
 
             if user is None:
-                # Новый пользователь - СОЗДАЕМ В БД СРАЗУ с временными данными
-                logger.info(f"[START] New user {telegram_id} - creating in DB immediately")
+                # Новый пользователь
+                logger.info(f"[START] New user {telegram_id} - checking admin status")
                 
-                # Создаем пользователя с department="common" (общий доступ) и language=None
-                user = User(
-                    telegram_id=telegram_id,
-                    full_name=full_name,
-                    role="admin" if user_is_admin else "employee",
-                    department=None if user_is_admin else "common",  # Админ без отдела (God Mode), сотрудник - common
-                    language=None,  # Будет выбран в следующем шаге
-                )
-                session.add(user)
-                await session.commit()
-                await session.refresh(user)
+                # Если это админ - создаем сразу с верификацией
+                if user_is_admin:
+                    logger.info(f"[START] User {telegram_id} is admin - auto-verifying")
+                    
+                    # Создаем админа с автоматической верификацией
+                    user = User(
+                        telegram_id=telegram_id,
+                        full_name=full_name,
+                        role="admin",
+                        department=None,  # Админ без отдела (God Mode)
+                        language=None,  # Будет выбран в следующем шаге
+                        is_verified=True,  # Админы верифицируются автоматически
+                    )
+                    session.add(user)
+                    await session.commit()
+                    await session.refresh(user)
+                    
+                    logger.info(f"[START] ✅ Admin {telegram_id} created with is_verified=True")
+                    
+                    # Переводим в состояние выбора языка
+                    await state.set_state(RegistrationState.waiting_for_language)
+                    await state.update_data(
+                        telegram_id=telegram_id,
+                        full_name=full_name,
+                        is_admin=user_is_admin
+                    )
+                    
+                    # Отправляем выбор языка
+                    await message.answer(
+                        "✅ Добро пожаловать, администратор!\n\n"
+                        "Выберите язык / Тілді таңдаңыз / Choose language / 选择语言",
+                        reply_markup=get_language_selection_keyboard()
+                    )
+                    logger.info(f"[START] Language selection shown to admin {telegram_id}")
+                    return
                 
-                logger.info(f"[START] ✅ User {telegram_id} CREATED in DB: id={user.id}, role={user.role}, language={user.language}")
-                logger.info(f"[START] Database path: {settings.database_path}")
+                # Обычный пользователь - запрашиваем инвайт-код
+                logger.info(f"[START] New user {telegram_id} - requesting invite code")
                 
-                # Переводим в состояние выбора языка
-                await state.set_state(RegistrationState.waiting_for_language)
+                # Переводим в состояние ожидания инвайт-кода
+                await state.set_state(RegistrationState.waiting_for_invite_code)
                 await state.update_data(
                     telegram_id=telegram_id,
                     full_name=full_name,
                     is_admin=user_is_admin
                 )
                 
-                # Отправляем выбор языка (текст на всех языках сразу)
-                await message.answer(
-                    "Выберите язык / Тілді таңдаңыз / Choose language / 选择语言",
-                    reply_markup=get_language_selection_keyboard()
+                # Запрашиваем инвайт-код на всех языках
+                invite_message = (
+                    "🔐 Добро пожаловать в UQsoft!\n\n"
+                    "Для доступа к системе введите ваш персональный инвайт-код.\n\n"
+                    "───────────────────\n\n"
+                    "🔐 UQsoft-ке қош келдіңіз!\n\n"
+                    "Жүйеге қол жеткізу үшін жеке шақыру кодын енгізіңіз.\n\n"
+                    "───────────────────\n\n"
+                    "🔐 Welcome to UQsoft!\n\n"
+                    "To access the system, enter your personal invite code.\n\n"
+                    "───────────────────\n\n"
+                    "🔐 欢迎来到UQsoft！\n\n"
+                    "要访问系统，请输入您的个人邀请码。"
                 )
-                logger.info(f"[START] Language selection shown to user {telegram_id}")
+                
+                await message.answer(invite_message)
+                logger.info(f"[START] Invite code requested from user {telegram_id}")
                 return
             else:
+                # Существующий пользователь - проверяем верификацию
+                logger.info(f"Existing user: {telegram_id} ({full_name}), is_verified={user.is_verified}, is_admin={user_is_admin}")
+                
+                # Если это админ но не верифицирован - верифицируем автоматически
+                if user_is_admin and not user.is_verified:
+                    logger.info(f"[START] Admin {telegram_id} not verified - auto-verifying")
+                    user.is_verified = True
+                    await session.commit()
+                    logger.info(f"[START] ✅ Admin {telegram_id} auto-verified")
+                
+                # Если пользователь не верифицирован и не админ - запрашиваем инвайт-код
+                if not user.is_verified and not user_is_admin:
+                    logger.info(f"[START] User {telegram_id} not verified - requesting invite code")
+                    
+                    # Переводим в состояние ожидания инвайт-кода
+                    await state.set_state(RegistrationState.waiting_for_invite_code)
+                    await state.update_data(
+                        telegram_id=telegram_id,
+                        full_name=full_name,
+                        is_admin=user_is_admin
+                    )
+                    
+                    # Запрашиваем инвайт-код
+                    user_lang = user.language or "ru"
+                    from app.core.i18n import i18n
+                    
+                    invite_message = (
+                        "🔐 Добро пожаловать обратно!\n\n"
+                        "Для доступа к системе введите ваш персональный инвайт-код.\n\n"
+                        "Если у вас нет кода, обратитесь к администратору."
+                    )
+                    
+                    await message.answer(invite_message)
+                    logger.info(f"[START] Invite code re-requested from user {telegram_id}")
+                    return
+                
                 # Обновляем имя, если изменилось
                 if user.full_name != full_name:
                     user.full_name = full_name
                     await session.commit()
-                logger.info(f"Existing user: {telegram_id} ({full_name})")
 
             # Устанавливаем role: если пользователь админ в таблице admins, то role = "admin"
             # независимо от роли в таблице users
@@ -300,6 +370,96 @@ async def handle_back_from_questions(
         await message.answer(
             i18n.get("error_generic", lang) if i18n else "Произошла ошибка.",
             reply_markup=get_main_menu(role=role, lang=lang)
+        )
+
+
+@router.message(StateFilter(RegistrationState.waiting_for_invite_code))
+async def handle_invite_code_input(message: Message, state: FSMContext) -> None:
+    """Обработчик ввода инвайт-кода при первичной регистрации."""
+    try:
+        # Получаем данные из FSM
+        data = await state.get_data()
+        telegram_id = data.get("telegram_id")
+        full_name = data.get("full_name")
+        is_admin = data.get("is_admin", False)
+        
+        invite_code = message.text.strip()
+        
+        logger.info(f"[INVITE] User {telegram_id} entered invite code: {invite_code}")
+        
+        # Проверяем инвайт-код
+        if invite_code != settings.invite_code:
+            # Неверный код
+            error_message = (
+                "❌ Код не найден.\n\n"
+                "Проверьте правильность кода или обратитесь к администратору.\n\n"
+                "───────────────────\n\n"
+                "❌ Код табылмады.\n\n"
+                "Кодтың дұрыстығын тексеріңіз немесе әкімшіге жүгініңіз.\n\n"
+                "───────────────────\n\n"
+                "❌ Code not found.\n\n"
+                "Check the code or contact the administrator.\n\n"
+                "───────────────────\n\n"
+                "❌ 未找到代码。\n\n"
+                "请检查代码或联系管理员。"
+            )
+            await message.answer(error_message)
+            logger.info(f"[INVITE] ❌ Wrong invite code for user {telegram_id}: '{invite_code}' (expected: '{settings.invite_code}')")
+            return
+        
+        # Верный код - создаем пользователя в БД
+        logger.info(f"[INVITE] ✅ Correct invite code for user {telegram_id}")
+        
+        async with AsyncSessionLocal() as session:
+            # Проверяем существует ли уже пользователь
+            stmt = select(User).where(User.telegram_id == telegram_id)
+            result = await session.execute(stmt)
+            user = result.scalar_one_or_none()
+            
+            if user is None:
+                # Создаем нового пользователя
+                user = User(
+                    telegram_id=telegram_id,
+                    full_name=full_name,
+                    role="admin" if is_admin else "employee",
+                    department=None if is_admin else "common",
+                    language=None,  # Будет выбран в следующем шаге
+                    is_verified=True,  # Верифицирован!
+                )
+                session.add(user)
+                await session.commit()
+                await session.refresh(user)
+                logger.info(f"[INVITE] ✅ User {telegram_id} created with is_verified=True")
+            else:
+                # Пользователь существует - обновляем верификацию
+                user.is_verified = True
+                await session.commit()
+                logger.info(f"[INVITE] ✅ User {telegram_id} verified (is_verified=True)")
+        
+        # Переводим в состояние выбора языка
+        await state.set_state(RegistrationState.waiting_for_language)
+        await state.update_data(
+            telegram_id=telegram_id,
+            full_name=full_name,
+            is_admin=is_admin
+        )
+        
+        # Отправляем выбор языка
+        success_message = (
+            "✅ Код принят!\n\n"
+            "Выберите язык / Тілді таңдаңыз / Choose language / 选择语言"
+        )
+        await message.answer(
+            success_message,
+            reply_markup=get_language_selection_keyboard()
+        )
+        logger.info(f"[INVITE] Language selection shown to verified user {telegram_id}")
+        
+    except Exception as e:
+        logger.error(f"[INVITE] Error processing invite code: {e}", exc_info=True)
+        await message.answer(
+            "❌ Произошла ошибка при обработке кода. Попробуйте еще раз или обратитесь к администратору.\n\n"
+            "❌ An error occurred. Please try again or contact the administrator."
         )
 
 

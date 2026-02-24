@@ -53,6 +53,11 @@ async def init_db() -> None:
         await conn.run_sync(Base.metadata.create_all)
         logger.info("[INIT_DB] ✅ Database tables created successfully")
     
+    # Запускаем миграции для обновления схемы БД
+    from app.core.migrations import run_migrations
+    async with AsyncSessionLocal() as session:
+        await run_migrations(session)
+    
     # Добавляем главного админа после создания таблиц
     # Импортируем модель локально, чтобы избежать циклических зависимостей
     from app.core.models import Admin

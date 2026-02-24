@@ -20,5 +20,6 @@ class AdminState(StatesGroup):
 class RegistrationState(StatesGroup):
     """Состояния для регистрации пользователя."""
     
+    waiting_for_invite_code = State()  # Ожидание инвайт-кода
     waiting_for_language = State()  # Ожидание выбора языка
     waiting_for_department = State()  # Ожидание выбора отдела

@@ -1,5 +1,7 @@
 """Хендлеры для администраторов."""
+import hashlib
 from pathlib import Path
+from typing import Dict, Tuple
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, StateFilter
@@ -27,6 +29,29 @@ from app.utils.states import AdminState
 from app.utils.department import get_department_display_name
 
 router = Router(name="admin")
+
+# Глобальное хранилище маппинга хешей на полные имена файлов
+# Формат: {file_hash: (dept_name, filename)}
+_file_hash_map: Dict[str, Tuple[str, str]] = {}
+
+
+def generate_file_hash(dept_name: str, filename: str) -> str:
+    """Генерирует короткий хеш для файла (10 символов)."""
+    full_path = f"{dept_name}:{filename}"
+    return hashlib.md5(full_path.encode()).hexdigest()[:10]
+
+
+def register_file_hash(dept_name: str, filename: str) -> str:
+    """Регистрирует файл в маппинге и возвращает его хеш."""
+    file_hash = generate_file_hash(dept_name, filename)
+    _file_hash_map[file_hash] = (dept_name, filename)
+    logger.debug(f"Registered file hash: {file_hash} -> {dept_name}/{filename}")
+    return file_hash
+
+
+def get_file_by_hash(file_hash: str) -> Tuple[str, str] | None:
+    """Получает dept_name и filename по хешу."""
+    return _file_hash_map.get(file_hash)
 
 
 async def check_admin_access(user_id: int) -> bool:
@@ -84,18 +109,29 @@ def get_admin_menu(lang: str = "ru") -> ReplyKeyboardMarkup:
 
 
 def create_knowledge_files_keyboard(files: list[str]) -> InlineKeyboardMarkup:
-    """Создает inline-клавиатуру со списком файлов и кнопками удаления."""
+    """Создает inline-клавиатуру со списком файлов и кнопками удаления.
+    
+    УСТАРЕЛО: Эта функция используется в старом коде управления знаниями.
+    Новая иерархическая система использует хеши для callback_data.
+    """
     buttons: list[list[InlineKeyboardButton]] = []
     
     for filename in files:
+        # Регистрируем файл и получаем короткий хеш
+        # Используем dept_name="legacy" для обратной совместимости
+        file_hash = register_file_hash("legacy", filename)
+        
+        # Обрезаем длинное имя файла для отображения
+        display_name = filename if len(filename) <= 30 else filename[:27] + "..."
+        
         buttons.append([
             InlineKeyboardButton(
-                text=f"📄 {filename}",
-                callback_data=f"view_file_{filename}"
+                text=f"📄 {display_name}",
+                callback_data=f"view_file:{file_hash}"
             ),
             InlineKeyboardButton(
                 text="❌ Удалить",
-                callback_data=f"delete_file_{filename}"
+                callback_data=f"delete_file:{file_hash}"
             )
         ])
     
@@ -630,26 +666,36 @@ async def handle_manage_knowledge(message: Message, role: str | None = None, lan
         await message.answer(i18n.get("admin_error", lang), reply_markup=get_admin_menu(lang))
 
 
-@router.callback_query(F.data.startswith("delete_file_"))
+@router.callback_query(F.data.startswith("delete_file:"))
 async def handle_delete_file(callback: CallbackQuery, role: str | None = None) -> None:
-    """Обрабатывает удаление файла из базы знаний."""
+    """Обрабатывает удаление файла из базы знаний (legacy код)."""
     try:
         if not await check_admin_access(callback.from_user.id):
             await callback.answer("У вас нет доступа.", show_alert=True)
             return
         
-        # Извлекаем имя файла из callback_data
-        filename = callback.data.replace("delete_file_", "", 1)
+        # Извлекаем file_hash из callback_data
+        file_hash = callback.data.replace("delete_file:", "")
         
-        if not filename:
-            await callback.answer("Ошибка: не указано имя файла.", show_alert=True)
+        # Получаем filename по хешу
+        file_data = get_file_by_hash(file_hash)
+        
+        if not file_data:
+            await callback.answer("Ошибка: файл не найден в маппинге.", show_alert=True)
+            logger.error(f"File hash not found for legacy delete: {file_hash}")
             return
+        
+        dept_name, filename = file_data
         
         logger.info(f"Admin {callback.from_user.id} requested deletion of file: {filename}")
         
         try:
             # Удаляем файл
             GeminiService.delete_knowledge_file(filename)
+            
+            # Удаляем из маппинга
+            if file_hash in _file_hash_map:
+                del _file_hash_map[file_hash]
             
             # Обновляем векторный индекс в памяти
             try:
@@ -658,7 +704,6 @@ async def handle_delete_file(callback: CallbackQuery, role: str | None = None) -
                 logger.info("[RAG] Indices reloaded successfully")
             except Exception as e:
                 logger.error(f"[RAG] Error reloading indices: {e}", exc_info=True)
-                # Не прерываем процесс, просто логируем ошибку
             
             # Обновляем список файлов
             files = GeminiService.get_knowledge_files()
@@ -680,7 +725,6 @@ async def handle_delete_file(callback: CallbackQuery, role: str | None = None) -
             )
             
             if not files:
-                # Если файлов больше нет, отправляем сообщение с предложениями
                 await callback.message.edit_text(
                     "📚 База знаний пуста.\n\n"
                     f"✅ Файл {filename} успешно удален.\n\n"
@@ -689,15 +733,12 @@ async def handle_delete_file(callback: CallbackQuery, role: str | None = None) -
                 )
                 await callback.answer(f"✅ Файл {filename} удален. База знаний пуста.")
             else:
-                # Обновляем список с кнопками действий
                 text = "📚 Управление базой знаний\n\n"
                 text += f"✅ Файл {filename} успешно удален.\n\n"
                 text += f"Осталось файлов: {len(files)}\n\n"
                 text += "Выберите файл для удаления:"
                 
                 keyboard = create_knowledge_files_keyboard(files)
-                
-                # Добавляем кнопки действий в конец клавиатуры
                 keyboard.inline_keyboard.extend(action_buttons.inline_keyboard)
                 
                 await callback.message.edit_text(text, reply_markup=keyboard)
@@ -748,10 +789,19 @@ async def handle_refresh_knowledge_files(callback: CallbackQuery, role: str | No
         await callback.answer("Произошла ошибка при обновлении списка.", show_alert=True)
 
 
-@router.callback_query(F.data.startswith("view_file_"))
+@router.callback_query(F.data.startswith("view_file:"))
 async def handle_view_file(callback: CallbackQuery, role: str | None = None) -> None:
-    """Показывает информацию о файле (заглушка для будущего расширения)."""
-    filename = callback.data.replace("view_file_", "", 1)
+    """Показывает информацию о файле (legacy код - заглушка для будущего расширения)."""
+    file_hash = callback.data.replace("view_file:", "")
+    
+    # Получаем filename по хешу
+    file_data = get_file_by_hash(file_hash)
+    
+    if not file_data:
+        await callback.answer("Файл не найден в маппинге.", show_alert=True)
+        return
+    
+    _, filename = file_data
     await callback.answer(f"Файл: {filename}", show_alert=True)
 
 
@@ -1368,11 +1418,19 @@ async def handle_kb_department_callback(callback: CallbackQuery, lang: str = "ru
         buttons: list[list[InlineKeyboardButton]] = []
         
         for file_info in files:
-            # Кнопка для каждого файла
+            filename = file_info['name']
+            
+            # Регистрируем файл и получаем короткий хеш
+            file_hash = register_file_hash(dept_name, filename)
+            
+            # Обрезаем длинное имя файла для отображения
+            display_name = filename if len(filename) <= 30 else filename[:27] + "..."
+            
+            # Кнопка для каждого файла с коротким хешем
             buttons.append([
                 InlineKeyboardButton(
-                    text=f"📄 {file_info['name']} ({file_info['size']})",
-                    callback_data=f"kb_file:{dept_name}:{file_info['name']}"
+                    text=f"📄 {display_name} ({file_info['size']})",
+                    callback_data=f"kb_file:{file_hash}"
                 )
             ])
         
@@ -1462,14 +1520,18 @@ async def handle_kb_file_callback(callback: CallbackQuery, lang: str = "ru") -> 
         
         from app.core.i18n import i18n
         
-        # Парсим callback_data: kb_file:dept_name:filename
-        parts = callback.data.split(":", 2)
-        if len(parts) != 3:
-            await callback.answer("Ошибка в формате данных.", show_alert=True)
+        # Парсим callback_data: kb_file:{file_hash}
+        file_hash = callback.data.replace("kb_file:", "")
+        
+        # Получаем dept_name и filename по хешу
+        file_data = get_file_by_hash(file_hash)
+        
+        if not file_data:
+            await callback.answer("Ошибка: файл не найден в маппинге.", show_alert=True)
+            logger.error(f"File hash not found in mapping: {file_hash}")
             return
         
-        dept_name = parts[1]
-        filename = parts[2]
+        dept_name, filename = file_data
         
         logger.info(f"Admin {callback.from_user.id} viewing file: {dept_name}/{filename}")
         
@@ -1503,16 +1565,16 @@ async def handle_kb_file_callback(callback: CallbackQuery, lang: str = "ru") -> 
             dept=dept_display
         )
         
-        # Создаем клавиатуру с кнопками
+        # Создаем клавиатуру с кнопками (используем file_hash)
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(
                     text="📥 Скачать",
-                    callback_data=f"kb_download:{dept_name}:{filename}"
+                    callback_data=f"kb_download:{file_hash}"
                 )],
                 [InlineKeyboardButton(
                     text=i18n.get("kb_delete_button", lang),
-                    callback_data=f"kb_del:{dept_name}:{filename}"
+                    callback_data=f"kb_del:{file_hash}"
                 )],
                 [InlineKeyboardButton(
                     text=i18n.get("back_to_files", lang),
@@ -1544,14 +1606,18 @@ async def handle_kb_download_callback(callback: CallbackQuery, lang: str = "ru")
         
         from app.core.i18n import i18n
         
-        # Парсим callback_data: kb_download:dept_name:filename
-        parts = callback.data.split(":", 2)
-        if len(parts) != 3:
-            await callback.answer("Ошибка в формате данных.", show_alert=True)
+        # Парсим callback_data: kb_download:{file_hash}
+        file_hash = callback.data.replace("kb_download:", "")
+        
+        # Получаем dept_name и filename по хешу
+        file_data = get_file_by_hash(file_hash)
+        
+        if not file_data:
+            await callback.answer("Ошибка: файл не найден в маппинге.", show_alert=True)
+            logger.error(f"File hash not found for download: {file_hash}")
             return
         
-        dept_name = parts[1]
-        filename = parts[2]
+        dept_name, filename = file_data
         
         logger.info(f"Admin {callback.from_user.id} downloading file: {dept_name}/{filename}")
         
@@ -1618,14 +1684,18 @@ async def handle_kb_delete_callback(callback: CallbackQuery, lang: str = "ru") -
         
         from app.core.i18n import i18n
         
-        # Парсим callback_data: kb_del:dept_name:filename
-        parts = callback.data.split(":", 2)
-        if len(parts) != 3:
-            await callback.answer("Ошибка в формате данных.", show_alert=True)
+        # Парсим callback_data: kb_del:{file_hash}
+        file_hash = callback.data.replace("kb_del:", "")
+        
+        # Получаем dept_name и filename по хешу
+        file_data = get_file_by_hash(file_hash)
+        
+        if not file_data:
+            await callback.answer("Ошибка: файл не найден в маппинге.", show_alert=True)
+            logger.error(f"File hash not found for deletion: {file_hash}")
             return
         
-        dept_name = parts[1]
-        filename = parts[2]
+        dept_name, filename = file_data
         
         logger.info(f"Admin {callback.from_user.id} deleting file: {dept_name}/{filename}")
         
@@ -1637,6 +1707,11 @@ async def handle_kb_delete_callback(callback: CallbackQuery, lang: str = "ru") -
             success = GeminiService.delete_document(dept_name, filename)
             
             if success:
+                # Удаляем запись из маппинга
+                if file_hash in _file_hash_map:
+                    del _file_hash_map[file_hash]
+                    logger.debug(f"Removed file hash from mapping: {file_hash}")
+                
                 # Файл успешно удален
                 text = i18n.get("file_deleted", lang)
                 

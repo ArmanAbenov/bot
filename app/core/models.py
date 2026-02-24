@@ -99,6 +99,9 @@ class User(Base):
     language: Mapped[str] = mapped_column(
         String(2), nullable=False, default="ru"
     )  # Язык интерфейса: ru, kk, en, zh
+    is_verified: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )  # Прошел ли пользователь проверку инвайт-кода
     registration_date: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
