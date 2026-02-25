@@ -437,10 +437,10 @@ class GeminiService:
         
         context_parts: List[str] = []
         
-            # Поддерживаемые текстовые форматы
-            text_extensions = {".txt", ".md", ".rst"}
-            pdf_extensions = {".pdf"}
-            pptx_extensions = {".pptx"}
+        # Поддерживаемые текстовые форматы
+        text_extensions = {".txt", ".md", ".rst"}
+        pdf_extensions = {".pdf"}
+        pptx_extensions = {".pptx"}
         
         # Читаем все файлы из папки knowledge
         for file_path in knowledge_path.iterdir():
