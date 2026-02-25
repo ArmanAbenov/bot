@@ -1360,6 +1360,98 @@ async def handle_new_admin_id(
         )
 
 
+@router.callback_query(F.data.startswith("support_reply:"))
+async def handle_support_reply_callback(
+    callback: CallbackQuery,
+    state: FSMContext,
+    lang: str = "ru",
+) -> None:
+    """
+    Обрабатывает нажатие на кнопку 'Ответить' под жалобой.
+    Переводит админа в состояние ожидания текста ответа.
+    """
+    try:
+        if not await check_admin_access(callback.from_user.id):
+            await callback.answer("У вас нет доступа.", show_alert=True)
+            return
+
+        try:
+            _, target_id_str = callback.data.split(":", 1)
+            target_user_id = int(target_id_str)
+        except Exception:
+            await callback.answer("Ошибка формата данных для ответа.", show_alert=True)
+            return
+
+        await state.set_state(AdminState.waiting_for_support_reply)
+        await state.update_data(support_target_user_id=target_user_id)
+
+        await callback.message.answer(
+            f"✉️ Введите ответ для пользователя (ID: {target_user_id}).\n\n"
+            "Ваше следующее сообщение будет отправлено ему в личные сообщения."
+        )
+        await callback.answer()
+        logger.info(
+            f"Admin {callback.from_user.id} started reply to support complaint from user {target_user_id}"
+        )
+    except Exception as e:
+        logger.error(f"Error in support_reply callback handler: {e}", exc_info=True)
+        await callback.answer("Произошла ошибка при подготовке ответа.", show_alert=True)
+
+
+@router.message(StateFilter(AdminState.waiting_for_support_reply))
+async def handle_support_reply_message(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+    lang: str = "ru",
+) -> None:
+    """
+    Получает текст ответа от админа и отправляет его пользователю.
+    """
+    try:
+        if not await check_admin_access(message.from_user.id):
+            await message.answer("У вас нет доступа.")
+            await state.clear()
+            return
+
+        data = await state.get_data()
+        target_user_id = data.get("support_target_user_id")
+
+        if not target_user_id:
+            await message.answer(
+                "Не удалось определить, кому отправить ответ. Попробуйте снова через кнопку 'Ответить'."
+            )
+            await state.clear()
+            return
+
+        reply_text = (message.text or "").strip()
+        if not reply_text:
+            await message.answer("Пожалуйста, отправьте текст ответа.")
+            return
+
+        # Отправляем ответ пользователю
+        try:
+            await bot.send_message(
+                chat_id=target_user_id,
+                text=f"📩 Ответ от администратора:\n\n{reply_text}",
+            )
+        except Exception as e:
+            logger.error(f"Failed to send support reply to user {target_user_id}: {e}", exc_info=True)
+            await message.answer("Не удалось отправить ответ пользователю.")
+            await state.clear()
+            return
+
+        await message.answer("✅ Ответ отправлен пользователю.")
+        logger.info(
+            f"Admin {message.from_user.id} sent support reply to user {target_user_id}"
+        )
+        await state.clear()
+    except Exception as e:
+        logger.error(f"Error in support reply message handler: {e}", exc_info=True)
+        await state.clear()
+        await message.answer("Произошла ошибка при отправке ответа пользователю.")
+
+
 # ============================================================================
 # CALLBACK HANDLERS ДЛЯ ИЕРАРХИЧЕСКОГО МЕНЮ БАЗЫ ЗНАНИЙ
 # ============================================================================

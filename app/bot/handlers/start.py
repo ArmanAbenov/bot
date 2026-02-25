@@ -4,7 +4,7 @@ from sqlalchemy import select
 from aiogram import Bot, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
+from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.keyboards.main_menu import get_main_menu
 from app.bot.keyboards.department import get_department_selection_keyboard, get_delivery_submenu_keyboard
@@ -14,14 +14,56 @@ from app.core.i18n import I18nManager
 from app.core.database import AsyncSessionLocal
 from app.core.models import Department, User
 from app.services.ai_service import GeminiService
-from app.services.admin_service import is_admin
+from app.services.admin_service import is_admin, get_all_admins
 from app.bot.handlers.media import format_response_with_media
 from app.utils.logger import logger
-from app.utils.states import QuestionState, RegistrationState
+from app.utils.states import QuestionState, RegistrationState, SupportState
 from app.utils.department import set_user_department, get_department_display_name
 from aiogram.types import CallbackQuery
 
 router = Router(name="start")
+
+
+@router.message(lambda message: message.text == "🆘 Поддержка/Жалоба")
+async def handle_support_button(
+    message: Message,
+    state: FSMContext,
+    role: str | None = None,
+    lang: str = "ru",
+    i18n: I18nManager | None = None,
+) -> None:
+    """
+    Обработчик кнопки '🆘 Поддержка/Жалоба'.
+    Переводит пользователя в состояние ожидания текста жалобы.
+    """
+    try:
+        # Обрабатываем только зарегистрированных пользователей
+        if role is None:
+            await message.answer(
+                "Эта функция доступна только для зарегистрированных пользователей."
+            )
+            return
+
+        await state.set_state(SupportState.waiting_for_support_message)
+
+        # Клавиатура только с кнопкой "Назад в меню"
+        support_keyboard = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="◀️ Назад в меню")],
+            ],
+            resize_keyboard=True,
+        )
+
+        await message.answer(
+            "🆘 Раздел поддержки\n\n"
+            "Опишите вашу проблему или жалобу одним сообщением.\n\n"
+            "Сообщение будет отправлено администраторам.\n\n"
+            "Чтобы вернуться в меню, нажмите «◀️ Назад в меню».",
+            reply_markup=support_keyboard,
+        )
+    except Exception as e:
+        logger.error(f"Error in support button handler: {e}", exc_info=True)
+        await message.answer("Произошла ошибка при открытии раздела поддержки. Попробуйте позже.")
 
 
 @router.message(Command("start"))
@@ -371,6 +413,134 @@ async def handle_back_from_questions(
             i18n.get("error_generic", lang) if i18n else "Произошла ошибка.",
             reply_markup=get_main_menu(role=role, lang=lang)
         )
+        
+
+
+@router.message(
+    StateFilter(SupportState.waiting_for_support_message),
+    lambda message: message.text in [
+        "◀️ Назад в меню",
+        "◀️ Мәзірге оралу",
+        "◀️ Back to menu",
+        "◀️ 返回菜单",
+    ],
+)
+async def handle_back_from_support(
+    message: Message,
+    state: FSMContext,
+    role: str | None = None,
+    lang: str = "ru",
+) -> None:
+    """Выход из режима поддержки и возврат в главное меню."""
+    try:
+        await state.clear()
+        async with AsyncSessionLocal() as session:
+            user_is_admin = await is_admin(session, message.from_user.id)
+
+        await message.answer(
+            "Вы вернулись в главное меню.",
+            reply_markup=get_main_menu(role=role, is_admin=user_is_admin, lang=lang),
+        )
+        logger.info(f"User {message.from_user.id} exited support mode")
+    except Exception as e:
+        logger.error(f"Error in back from support handler: {e}", exc_info=True)
+        await state.clear()
+        await message.answer(
+            "Произошла ошибка.",
+            reply_markup=get_main_menu(role=role, lang=lang),
+        )
+
+
+@router.message(
+    StateFilter(SupportState.waiting_for_support_message),
+    lambda message: message.text and not message.text.startswith("/")
+)
+async def handle_support_message_in_fsm(
+    message: Message,
+    bot: Bot,
+    state: FSMContext,
+    role: str | None = None,
+    lang: str = "ru",
+) -> None:
+    """
+    Обработчик текста жалобы пользователя в FSM состоянии ожидания сообщения поддержки.
+    """
+    try:
+        if role is None:
+            await state.clear()
+            await message.answer("Эта функция доступна только для зарегистрированных пользователей.")
+            return
+
+        complaint_text = message.text.strip()
+        if not complaint_text:
+            await message.answer("Пожалуйста, отправьте текст жалобы.")
+            return
+
+        user_id = message.from_user.id
+
+        async with AsyncSessionLocal() as session:
+            # Получаем данные пользователя
+            stmt = select(User).where(User.telegram_id == user_id)
+            result = await session.execute(stmt)
+            user = result.scalar_one_or_none()
+
+            if user and user.department:
+                dept_display = get_department_display_name(user.department)
+            else:
+                dept_display = "Не назначен"
+
+            user_name = (user.full_name if user and user.full_name else None) or (
+                f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
+                or message.from_user.username
+                or "Пользователь"
+            )
+
+            # Получаем всех админов
+            admins = await get_all_admins(session)
+
+        if not admins:
+            await message.answer("Сейчас нет администраторов, которые могут принять жалобу.")
+            await state.clear()
+            return
+
+        header = (
+            "⚠️ НОВАЯ ЖАЛОБА\n"
+            f"От: {user_name} (ID: {user_id}, Отдел: {dept_display})\n"
+            f"Текст: {complaint_text}"
+        )
+
+        # Отправляем жалобу всем админам
+        for admin in admins:
+            try:
+                await bot.send_chat_action(chat_id=admin.user_id, action="typing")
+                await bot.send_message(
+                    chat_id=admin.user_id,
+                    text=header,
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[
+                            [
+                                InlineKeyboardButton(
+                                    text="Ответить",
+                                    callback_data=f"support_reply:{user_id}",
+                                )
+                            ]
+                        ]
+                    ),
+                )
+            except Exception as e:
+                logger.error(f"Failed to send complaint to admin {admin.user_id}: {e}", exc_info=True)
+
+        await message.answer(
+            "✅ Ваша жалоба отправлена администраторам. Они свяжутся с вами в личных сообщениях.",
+            reply_markup=get_main_menu(role=role, is_admin=False, lang=lang),
+        )
+        await state.clear()
+        logger.info(f"User {user_id} sent support complaint")
+
+    except Exception as e:
+        logger.error(f"Error in support message handler: {e}", exc_info=True)
+        await state.clear()
+        await message.answer("Произошла ошибка при отправке жалобы. Попробуйте позже.")
 
 
 @router.message(StateFilter(RegistrationState.waiting_for_invite_code))

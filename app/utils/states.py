@@ -15,6 +15,7 @@ class AdminState(StatesGroup):
     waiting_for_document = State()  # Ожидание документа для загрузки в базу знаний
     wait_for_new_admin_id = State()  # Ожидание ID нового админа (пересылка сообщения или ввод ID)
     waiting_for_department_choice = State()  # Ожидание выбора отдела для добавления знаний
+    waiting_for_support_reply = State()  # Ожидание текста ответа на жалобу пользователя
 
 
 class RegistrationState(StatesGroup):
@@ -23,3 +24,9 @@ class RegistrationState(StatesGroup):
     waiting_for_invite_code = State()  # Ожидание инвайт-кода
     waiting_for_language = State()  # Ожидание выбора языка
     waiting_for_department = State()  # Ожидание выбора отдела
+
+
+class SupportState(StatesGroup):
+    """Состояния для раздела поддержки/жалоб."""
+    
+    waiting_for_support_message = State()  # Ожидание текста жалобы от пользователя

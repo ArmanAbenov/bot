@@ -19,6 +19,7 @@ def get_main_menu(role: str | None = None, is_admin: bool = False, lang: str = "
     keyboard_buttons = [
         [KeyboardButton(text=i18n.get("main_menu_ask", lang))],
         [KeyboardButton(text=i18n.get("main_menu_settings", lang))],
+        [KeyboardButton(text="🆘 Поддержка/Жалоба")],
     ]
 
     # Добавляем кнопки в зависимости от роли или статуса админа
