@@ -179,3 +179,29 @@ class Admin(Base):
 
     def __repr__(self) -> str:
         return f"<Admin(user_id={self.user_id}, username={self.username})>"
+
+
+class Feedback(Base):
+    """Модель обратной связи по ответам бота (лайк/дизлайк)."""
+
+    __tablename__ = "feedback"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, index=True
+    )  # Telegram user_id
+    message_id: Mapped[int] = mapped_column(
+        BigInteger, nullable=False
+    )  # ID сообщения с ответом бота
+    rating: Mapped[bool] = mapped_column(
+        Boolean, nullable=False
+    )  # True = помогло, False = не помогло
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<Feedback(id={self.id}, user_id={self.user_id}, "
+            f"message_id={self.message_id}, rating={self.rating})>"
+        )

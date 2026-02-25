@@ -12,7 +12,7 @@ from app.bot.keyboards.language import get_language_selection_keyboard
 from app.core.config import settings
 from app.core.i18n import I18nManager
 from app.core.database import AsyncSessionLocal
-from app.core.models import Department, User
+from app.core.models import Department, User, Feedback
 from app.services.ai_service import GeminiService
 from app.services.admin_service import is_admin, get_all_admins
 from app.bot.handlers.media import format_response_with_media
@@ -315,6 +315,22 @@ async def handle_question_in_fsm(
             # Форматируем ответ с медиа-кнопками
             formatted_response, media_keyboard = format_response_with_media(answer, media_links)
             
+            # Клавиатура для оценки ответа
+            feedback_keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="✅ Решило вопрос",
+                            callback_data="feedback:1",
+                        ),
+                        InlineKeyboardButton(
+                            text="❌ Не помогло",
+                            callback_data="feedback:0",
+                        ),
+                    ]
+                ]
+            )
+            
             # Создаем клавиатуру с кнопкой "Назад" для выхода из режима вопросов
             question_mode_keyboard = ReplyKeyboardMarkup(
                 keyboard=[
@@ -323,10 +339,10 @@ async def handle_question_in_fsm(
                 resize_keyboard=True,
             )
             
-            # Отправляем ответ пользователю
-            await message.answer(
+            # Отправляем ответ пользователю с inline-кнопками оценки
+            answer_message = await message.answer(
                 formatted_response,
-                reply_markup=question_mode_keyboard if media_keyboard is None else None
+                reply_markup=feedback_keyboard,
             )
             
             # Если есть медиа-кнопки, отправляем их отдельным сообщением
@@ -541,6 +557,68 @@ async def handle_support_message_in_fsm(
         logger.error(f"Error in support message handler: {e}", exc_info=True)
         await state.clear()
         await message.answer("Произошла ошибка при отправке жалобы. Попробуйте позже.")
+
+
+@router.callback_query(
+    lambda c: c.data is not None and c.data.startswith("feedback:")
+)
+async def handle_feedback_callback(
+    callback: CallbackQuery,
+) -> None:
+    """
+    Обрабатывает нажатие на кнопки оценки ответа (✅/❌),
+    сохраняет результат в БД и меняет текст кнопок.
+    """
+    try:
+        if not callback.message:
+            await callback.answer()
+            return
+
+        data = callback.data or ""
+        try:
+            _, value = data.split(":", 1)
+            rating = value == "1"
+        except Exception:
+            await callback.answer("Некорректные данные кнопки.", show_alert=False)
+            return
+
+        user_id = callback.from_user.id
+        message_id = callback.message.message_id
+
+        # Сохраняем отзыв в БД
+        async with AsyncSessionLocal() as session:
+            feedback = Feedback(
+                user_id=user_id,
+                message_id=message_id,
+                rating=rating,
+            )
+            session.add(feedback)
+            await session.commit()
+
+        # Обновляем inline-клавиатуру
+        thanks_keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="Спасибо за отзыв!",
+                        callback_data="feedback:thanks",
+                    )
+                ]
+            ]
+        )
+
+        try:
+            await callback.message.edit_reply_markup(reply_markup=thanks_keyboard)
+        except Exception:
+            # Если не удалось изменить (например, уже меняли) — игнорируем
+            pass
+
+        await callback.answer("Спасибо за отзыв!")
+        logger.info(f"Saved feedback from user {user_id} for message {message_id}: {rating}")
+
+    except Exception as e:
+        logger.error(f"Error in feedback callback handler: {e}", exc_info=True)
+        await callback.answer("Ошибка при сохранении отзыва.", show_alert=False)
 
 
 @router.message(StateFilter(RegistrationState.waiting_for_invite_code))
