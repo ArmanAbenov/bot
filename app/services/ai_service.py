@@ -355,7 +355,7 @@ class GeminiService:
                             content = ""
                             
                             try:
-                            if file_ext in text_extensions:
+                                if file_ext in text_extensions:
                                     content = file_path.read_text(encoding="utf-8")
                                 elif file_ext in pdf_extensions:
                                     if fitz is None:
