@@ -2,18 +2,21 @@
 import hashlib
 from pathlib import Path
 from typing import Dict, Tuple
+from datetime import datetime, timedelta
+import csv
+import tempfile
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from app.bot.keyboards.main_menu import get_main_menu
 from app.bot.keyboards.department import get_admin_department_keyboard, get_delivery_submenu_keyboard
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
-from app.core.models import Admin, Department
+from app.core.models import Admin, Department, Feedback, ChatHistory
 from app.services.ai_service import GeminiService
 from app.services.admin_service import add_admin, get_all_admins, is_admin, remove_admin
 from app.services.employee_service import (
@@ -100,6 +103,8 @@ def get_admin_menu(lang: str = "ru") -> ReplyKeyboardMarkup:
             [KeyboardButton(text=i18n.get("admin_manage_knowledge", lang))],
             [KeyboardButton(text=i18n.get("admin_manage_employees", lang))],
             [KeyboardButton(text=i18n.get("admin_manage_admins", lang))],
+            [KeyboardButton(text="📊 Отчет по качеству")],
+            [KeyboardButton(text="📄 Скачать логи вопросов")],
             [KeyboardButton(text=i18n.get("admin_invite_code", lang))],
             [KeyboardButton(text=i18n.get("main_menu_back", lang))],
         ],
@@ -241,6 +246,185 @@ async def handle_invite_code_button(message: Message, role: str | None = None, l
         logger.error(f"Error in invite code button handler: {e}", exc_info=True)
         from app.core.i18n import i18n
         await message.answer(i18n.get("admin_error", lang), reply_markup=get_admin_menu(lang))
+
+
+@router.message(lambda message: message.text == "📄 Скачать логи вопросов")
+async def handle_download_question_logs(message: Message, bot: Bot, lang: str = "ru") -> None:
+    """
+    Генерирует CSV-файл с логами вопросов и оценками и отправляет админу.
+    Включает только те вопросы, по которым есть отзыв (Feedback).
+    """
+    try:
+        if not await check_admin_access(message.from_user.id):
+            await message.answer("У вас нет доступа.")
+            return
+
+        await message.answer("⏳ Формирую CSV с логами вопросов, подождите...")
+
+        async with AsyncSessionLocal() as session:
+            # Получаем все отзывы, последние сначала
+            feedback_stmt = select(Feedback).order_by(Feedback.created_at.desc())
+            feedback_rows = (await session.execute(feedback_stmt)).scalars().all()
+
+            if not feedback_rows:
+                await message.answer("Пока нет отзывов. Логи вопросов с оценками пусты.")
+                return
+
+            # Готовим данные для CSV
+            rows: list[list[str]] = []
+            header = [
+                "feedback_id",
+                "user_id",
+                "feedback_created_at",
+                "rating",
+                "question_timestamp",
+                "question_text",
+            ]
+
+            for fb in feedback_rows:
+                # Ищем последний вопрос пользователя перед отзывом
+                q_stmt = (
+                    select(ChatHistory)
+                    .where(
+                        ChatHistory.user_id == fb.user_id,
+                        ChatHistory.role == "user",
+                        ChatHistory.timestamp <= fb.created_at,
+                    )
+                    .order_by(ChatHistory.timestamp.desc())
+                    .limit(1)
+                )
+                q_row = (await session.execute(q_stmt)).scalar_one_or_none()
+
+                question_text = (q_row.content if q_row else "").replace("\n", " ").strip()
+                question_ts = (
+                    q_row.timestamp.strftime("%Y-%m-%d %H:%M:%S") if q_row else ""
+                )
+
+                rows.append(
+                    [
+                        str(fb.id),
+                        str(fb.user_id),
+                        fb.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                        "1" if fb.rating else "0",
+                        question_ts,
+                        question_text,
+                    ]
+                )
+
+        # Пишем во временный CSV-файл
+        with tempfile.NamedTemporaryFile("w", newline="", suffix=".csv", delete=False, encoding="utf-8") as tmp:
+            writer = csv.writer(tmp)
+            writer.writerow(header)
+            writer.writerows(rows)
+            tmp_path = Path(tmp.name)
+
+        # Отправляем файл админу
+        try:
+            document = FSInputFile(tmp_path)
+            await bot.send_document(
+                chat_id=message.from_user.id,
+                document=document,
+                caption="📄 Логи вопросов с оценками (CSV).",
+            )
+        finally:
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+
+    except Exception as e:
+        logger.error(f"Error in download question logs handler: {e}", exc_info=True)
+        await message.answer("Произошла ошибка при формировании логов вопросов.")
+
+
+@router.message(lambda message: message.text == "📊 Отчет по качеству")
+async def handle_quality_report(message: Message, lang: str = "ru") -> None:
+    """
+    Показывает отчет по качеству ответов:
+    - % положительных отзывов
+    - топ 10 проблемных вопросов (❌)
+    - уникальные пользователи за последние 24 часа
+    """
+    try:
+        if not await check_admin_access(message.from_user.id):
+            await message.answer("У вас нет доступа.")
+            return
+
+        async with AsyncSessionLocal() as session:
+            # Общая статистика по отзывам
+            total_feedback_stmt = select(func.count(Feedback.id))
+            positive_feedback_stmt = select(func.count(Feedback.id)).where(Feedback.rating.is_(True))
+
+            total_feedback = (await session.execute(total_feedback_stmt)).scalar_one()
+            positive_feedback = (await session.execute(positive_feedback_stmt)).scalar_one()
+
+            if total_feedback > 0:
+                positive_percent = round((positive_feedback / total_feedback) * 100, 1)
+            else:
+                positive_percent = 0.0
+
+            # Топ проблемных вопросов (последние 10 с рейтингом False)
+            negative_stmt = (
+                select(Feedback)
+                .where(Feedback.rating.is_(False))
+                .order_by(Feedback.created_at.desc())
+                .limit(10)
+            )
+            negative_feedbacks = (await session.execute(negative_stmt)).scalars().all()
+
+            problem_questions: list[str] = []
+            for fb in negative_feedbacks:
+                # Ищем последний вопрос пользователя перед отзывом
+                q_stmt = (
+                    select(ChatHistory)
+                    .where(
+                        ChatHistory.user_id == fb.user_id,
+                        ChatHistory.role == "user",
+                        ChatHistory.timestamp <= fb.created_at,
+                    )
+                    .order_by(ChatHistory.timestamp.desc())
+                    .limit(1)
+                )
+                q_row = (await session.execute(q_stmt)).scalar_one_or_none()
+
+                question_text = (q_row.content if q_row else "<вопрос не найден>").strip()
+                ts = q_row.timestamp.strftime("%Y-%m-%d %H:%M") if q_row else fb.created_at.strftime("%Y-%m-%d %H:%M")
+                preview = question_text.replace("\n", " ")
+                if len(preview) > 120:
+                    preview = preview[:117] + "..."
+
+                problem_questions.append(f"- [{ts}] ID {fb.user_id}: {preview}")
+
+            # Уникальные пользователи за последние 24 часа
+            now = datetime.utcnow()
+            day_ago = now - timedelta(days=1)
+            active_users_stmt = (
+                select(func.count(func.distinct(ChatHistory.user_id)))
+                .where(ChatHistory.timestamp >= day_ago)
+            )
+            active_users = (await session.execute(active_users_stmt)).scalar_one()
+
+        # Формируем текст отчета
+        lines: list[str] = []
+        lines.append("📊 *Отчет по качеству ответов*")
+        lines.append("")
+        lines.append(f"✅ Положительных отзывов: *{positive_percent}%*  ({positive_feedback} из {total_feedback})" if total_feedback else "✅ Положительных отзывов: данных пока нет.")
+        lines.append("")
+        lines.append(f"👥 Уникальных пользователей за последние 24 часа: *{active_users}*")
+        lines.append("")
+        lines.append("❌ *Топ проблемных вопросов (последние 10):*")
+        if problem_questions:
+            lines.extend(problem_questions)
+        else:
+            lines.append("- Нет вопросов с негативной оценкой.")
+
+        report_text = "\n".join(lines)
+
+        await message.answer(report_text, parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error(f"Error in quality report handler: {e}", exc_info=True)
+        await message.answer("Произошла ошибка при формировании отчета по качеству.")
 
 
 @router.message(lambda message: message.text in [
