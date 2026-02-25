@@ -30,6 +30,13 @@ except ImportError:
     DOCX_AVAILABLE = False
     Document = None  # type: ignore
 
+try:
+    from pptx import Presentation
+    PPTX_AVAILABLE = True
+except ImportError:
+    PPTX_AVAILABLE = False
+    Presentation = None  # type: ignore
+
 from app.core.config import settings
 from app.services.vector_store import VectorStore
 from app.services.chat_history import (
@@ -66,6 +73,39 @@ class GeminiService:
     
     # Старое хранилище для обратной совместимости (deprecated)
     _vector_store: VectorStore | None = None
+
+    @staticmethod
+    def _extract_text_from_pptx(file_path: Path) -> str:
+        """
+        Извлекает текст из PPTX-презентации.
+        Проходит по всем слайдам и текстовым блокам.
+        """
+        if not PPTX_AVAILABLE or Presentation is None:
+            logger.warning(f"[RAG] python-pptx not installed, skipping PPTX: {file_path.name}")
+            return ""
+
+        try:
+            prs = Presentation(file_path)
+            parts: list[str] = []
+
+            for slide in prs.slides:
+                for shape in slide.shapes:
+                    # Стандартный способ: has_text_frame
+                    if hasattr(shape, "has_text_frame") and shape.has_text_frame and shape.text_frame:
+                        for paragraph in shape.text_frame.paragraphs:
+                            line = "".join(run.text for run in paragraph.runs).strip()
+                            if line:
+                                parts.append(line)
+                    # На всякий случай fallback на .text
+                    elif hasattr(shape, "text"):
+                        text = str(shape.text).strip()
+                        if text:
+                            parts.append(text)
+
+            return "\n".join(parts)
+        except Exception as e:
+            logger.warning(f"[RAG] Failed to read PPTX {file_path.name}: {e}")
+            return ""
     
     @staticmethod
     async def reload_indices() -> None:
@@ -97,6 +137,7 @@ class GeminiService:
             text_extensions = {".txt", ".md", ".rst"}
             pdf_extensions = {".pdf"}
             docx_extensions = {".docx"}
+            pptx_extensions = {".pptx"}
             
             # Сначала загружаем common файлы
             common_path = knowledge_path / "common"
@@ -125,6 +166,8 @@ class GeminiService:
                                 continue
                             doc = Document(file_path)
                             content = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+                        elif file_ext in pptx_extensions:
+                            content = GeminiService._extract_text_from_pptx(file_path)
                         else:
                             continue
                         
@@ -219,6 +262,7 @@ class GeminiService:
             text_extensions = {".txt", ".md", ".rst"}
             pdf_extensions = {".pdf"}
             docx_extensions = {".docx"}
+            pptx_extensions = {".pptx"}
             
             # Получаем список всех отделов (нормализуем в нижний регистр)
             departments = [dept.value.lower() for dept in Department]
@@ -269,6 +313,10 @@ class GeminiService:
                                     text_parts.append(paragraph.text)
                             content = "\n".join(text_parts)
                         
+                        # Читаем PPTX файлы
+                        elif file_ext in pptx_extensions:
+                            content = GeminiService._extract_text_from_pptx(file_path)
+                        
                         else:
                             continue
                         
@@ -307,7 +355,7 @@ class GeminiService:
                             content = ""
                             
                             try:
-                                if file_ext in text_extensions:
+                            if file_ext in text_extensions:
                                     content = file_path.read_text(encoding="utf-8")
                                 elif file_ext in pdf_extensions:
                                     if fitz is None:
@@ -320,6 +368,8 @@ class GeminiService:
                                         continue
                                     doc = Document(file_path)
                                     content = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+                                elif file_ext in pptx_extensions:
+                                    content = GeminiService._extract_text_from_pptx(file_path)
                                 else:
                                     continue
                                 
@@ -387,9 +437,10 @@ class GeminiService:
         
         context_parts: List[str] = []
         
-        # Поддерживаемые текстовые форматы
-        text_extensions = {".txt", ".md", ".rst"}
-        pdf_extensions = {".pdf"}
+            # Поддерживаемые текстовые форматы
+            text_extensions = {".txt", ".md", ".rst"}
+            pdf_extensions = {".pdf"}
+            pptx_extensions = {".pptx"}
         
         # Читаем все файлы из папки knowledge
         for file_path in knowledge_path.iterdir():
@@ -417,6 +468,10 @@ class GeminiService:
                     content = "\n".join(text_parts)
                     doc.close()
                     
+                # Читаем PPTX файлы
+                elif file_ext in pptx_extensions:
+                    content = GeminiService._extract_text_from_pptx(file_path)
+                
                 else:
                     logger.debug(f"Unsupported file type: {file_path.name}")
                     continue
@@ -1715,7 +1770,7 @@ FILENAME: короткое_название
             files = [
                 file.name
                 for file in knowledge_path.iterdir()
-                if file.is_file() and file.suffix in {".txt", ".pdf", ".md", ".rst"}
+                if file.is_file() and file.suffix in {".txt", ".pdf", ".md", ".rst", ".pptx"}
             ]
             
             logger.info(f"Found {len(files)} knowledge files")
@@ -1786,7 +1841,7 @@ FILENAME: короткое_название
                 return {}
             
             # Поддерживаемые форматы файлов
-            supported_extensions = {".txt", ".pdf", ".docx", ".md", ".rst"}
+            supported_extensions = {".txt", ".pdf", ".docx", ".md", ".rst", ".pptx"}
             
             stats: dict[str, int] = {}
             
@@ -1843,7 +1898,7 @@ FILENAME: короткое_название
                 return []
             
             # Поддерживаемые форматы файлов
-            supported_extensions = {".txt", ".pdf", ".docx", ".md", ".rst"}
+            supported_extensions = {".txt", ".pdf", ".docx", ".md", ".rst", ".pptx"}
             
             files_info: List[dict[str, str]] = []
             
